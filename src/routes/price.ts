@@ -127,7 +127,10 @@ export function createPriceRoute(
 
       // Get price in 8 decimals (Pyth uses 8 decimals)
       const priceInDecimals = BigInt(Math.floor(currentPrice.price * 1e8));
-      const timestamp = Math.floor(Date.now() / 1000); // Unix timestamp in seconds
+      
+      // CRITICAL: Use current Unix timestamp in SECONDS (not milliseconds!)
+      // Subtract 2 seconds to account for network delay and ensure timestamp is in past
+      const timestamp = Math.floor(Date.now() / 1000) - 2;
 
       // Sign the price data
       const signedData = await signerService.signPrice(
@@ -161,23 +164,23 @@ export function createPriceRoute(
    * Verify a signature (for testing)
    * 
    * POST /api/price/verify
-   * Body: { assetId, price, timestamp, signature }
+   * Body: { symbol, price, timestamp, signature }
    */
   router.post('/verify', (req: Request, res: Response) => {
     try {
-      const { assetId, price, timestamp, signature } = req.body;
+      const { symbol, price, timestamp, signature } = req.body;
 
-      if (!assetId || !price || !timestamp || !signature) {
+      if (!symbol || !price || !timestamp || !signature) {
         return res.status(400).json({
           success: false,
           error: 'Missing required fields',
-          required: ['assetId', 'price', 'timestamp', 'signature'],
+          required: ['symbol', 'price', 'timestamp', 'signature'],
           timestamp: Date.now()
         });
       }
 
       const recoveredAddress = signerService.verifySignature(
-        assetId,
+        symbol,
         price,
         timestamp,
         signature

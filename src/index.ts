@@ -5,7 +5,9 @@ import { Server as WebSocketServer } from 'ws';
 import http from 'http';
 import { PythPriceService } from './services/PythPriceService';
 import { PriceSignerService } from './services/PriceSignerService';
+import { RelayService } from './services/RelayService';
 import { createPriceRoute } from './routes/price';
+import { createRelayRoute } from './routes/relay';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -35,6 +37,7 @@ async function main() {
     // Initialize services
     const priceService = new PythPriceService();
     const signerService = new PriceSignerService(); // Auto-initializes in constructor
+    const relayService = new RelayService(); // Initialize relay service for gasless transactions
     
     // Wait for Pyth price service to initialize
     await priceService.initialize();
@@ -44,6 +47,13 @@ async function main() {
       logger.success(`✅ Price Signer ready: ${signerService.getSignerAddress()}`);
     } else {
       logger.warn('⚠️  Price Signer not available (signed price endpoints disabled)');
+    }
+    
+    // Check Relay Service status
+    const relayBalance = await relayService.getRelayBalance();
+    logger.success(`✅ Relay Service ready: ${relayBalance.ethFormatted} ETH`);
+    if (parseFloat(relayBalance.ethFormatted) < 0.01) {
+      logger.warn('⚠️  Relay wallet has low ETH balance! Please fund for gasless transactions.');
     }
     
     // Create HTTP server for both Express and WebSocket
@@ -103,6 +113,10 @@ async function main() {
           signedPrices: '/api/price/signed/:symbol',
           verifySignature: '/api/price/verify',
           signerStatus: '/api/price/signer/status',
+          relay: '/api/relay',
+          relayTransaction: '/api/relay/transaction',
+          relayBalance: '/api/relay/balance/:address',
+          relayStatus: '/api/relay/status',
           health: '/health'
         },
         timestamp: Date.now()
@@ -121,6 +135,7 @@ async function main() {
     });
     
     app.use('/api/price', createPriceRoute(priceService, signerService));
+    app.use('/api/relay', createRelayRoute(relayService));
     
     // Global error handler
     app.use((error: Error, req: Request, res: Response, next: NextFunction) => {

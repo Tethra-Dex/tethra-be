@@ -108,16 +108,18 @@ export class PriceSignerService {
     }
 
     try {
-      // 1. Create asset ID (keccak256 hash of asset name)
+      // 1. Create asset ID (keccak256 hash of asset name) - for reference only
       const assetId = ethers.id(asset);
 
       // 2. Convert price to BigInt if it's a string
       const priceBigInt = typeof price === 'string' ? BigInt(price) : price;
 
-      // 3. Create message hash (same format as smart contract)
+      // 3. Create message hash (MUST MATCH SMART CONTRACT FORMAT!)
+      // Contract uses: keccak256(abi.encodePacked(symbol, price, timestamp))
+      // Where symbol is STRING, not bytes32!
       const messageHash = ethers.solidityPackedKeccak256(
-        ['bytes32', 'uint256', 'uint256'],
-        [assetId, priceBigInt, timestamp]
+        ['string', 'uint256', 'uint256'],
+        [asset, priceBigInt, timestamp]
       );
 
       // 4. Sign the message hash (off-chain, no gas!)
@@ -144,7 +146,7 @@ export class PriceSignerService {
    * Verify a signature (for testing purposes)
    */
   verifySignature(
-    assetId: string,
+    symbol: string,
     price: string | bigint,
     timestamp: number,
     signature: string
@@ -152,10 +154,10 @@ export class PriceSignerService {
     try {
       const priceBigInt = typeof price === 'string' ? BigInt(price) : price;
 
-      // Recreate the message hash
+      // Recreate the message hash (MUST MATCH SMART CONTRACT!)
       const messageHash = ethers.solidityPackedKeccak256(
-        ['bytes32', 'uint256', 'uint256'],
-        [assetId, priceBigInt, timestamp]
+        ['string', 'uint256', 'uint256'],
+        [symbol, priceBigInt, timestamp]
       );
 
       // Recover signer address from signature
