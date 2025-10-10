@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { Server as WebSocketServer } from 'ws';
 import http from 'http';
 import { PythPriceService } from './services/PythPriceService';
+import { PriceSignerService } from './services/PriceSignerService';
 import { createPriceRoute } from './routes/price';
 import { Logger } from './utils/Logger';
 
@@ -33,9 +34,17 @@ async function main() {
     
     // Initialize services
     const priceService = new PythPriceService();
+    const signerService = new PriceSignerService(); // Auto-initializes in constructor
     
-    // Wait for service to initialize
+    // Wait for Pyth price service to initialize
     await priceService.initialize();
+    
+    // Check Price Signer status
+    if (signerService.isInitialized()) {
+      logger.success(`✅ Price Signer ready: ${signerService.getSignerAddress()}`);
+    } else {
+      logger.warn('⚠️  Price Signer not available (signed price endpoints disabled)');
+    }
     
     // Create HTTP server for both Express and WebSocket
     const server = http.createServer(app);
@@ -91,6 +100,9 @@ async function main() {
         endpoints: {
           websocket: '/ws/price',
           prices: '/api/price',
+          signedPrices: '/api/price/signed/:symbol',
+          verifySignature: '/api/price/verify',
+          signerStatus: '/api/price/signer/status',
           health: '/health'
         },
         timestamp: Date.now()
@@ -108,7 +120,7 @@ async function main() {
       });
     });
     
-    app.use('/api/price', createPriceRoute(priceService));
+    app.use('/api/price', createPriceRoute(priceService, signerService));
     
     // Global error handler
     app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
