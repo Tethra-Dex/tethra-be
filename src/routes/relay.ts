@@ -217,6 +217,56 @@ export function createRelayRoute(relayService: RelayService): Router {
   });
 
   /**
+   * GASLESS CLOSE POSITION - HACKATHON MODE 🚀
+   * POST /api/relay/close-position
+   * Body: { userAddress: string, positionId: string, symbol: string }
+   */
+  router.post('/close-position', async (req: Request, res: Response) => {
+    try {
+      const { userAddress, positionId, symbol } = req.body;
+      
+      if (!userAddress || !positionId || !symbol) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields',
+          required: ['userAddress', 'positionId', 'symbol'],
+          timestamp: Date.now()
+        });
+      }
+
+      logger.info(`🔥 GASLESS CLOSE: Position ${positionId} for user ${userAddress}`);
+
+      // Relayer closes position directly (fuck security, this is hackathon!)
+      const result = await relayService.closePositionGasless(
+        userAddress,
+        positionId,
+        symbol
+      );
+
+      logger.success(`✅ Position ${positionId} closed! TX: ${result.txHash}`);
+
+      res.json({
+        success: true,
+        data: {
+          txHash: result.txHash,
+          positionId: positionId,
+          explorerUrl: `https://sepolia.basescan.org/tx/${result.txHash}`
+        },
+        timestamp: Date.now()
+      });
+
+    } catch (error) {
+      logger.error('Error closing position gasless:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to close position',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: Date.now()
+      });
+    }
+  });
+
+  /**
    * Get relay service status
    * GET /api/relay/status
    */
