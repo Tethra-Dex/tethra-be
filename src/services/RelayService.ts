@@ -108,8 +108,26 @@ export class RelayService {
       const usdcCost = await this.paymasterContract.calculateUsdcCost(estimatedGas);
       return usdcCost;
     } catch (error) {
-      this.logger.error('Error calculating gas cost:', error);
-      return 0n;
+      this.logger.warn('⚠️  Paymaster unavailable, using fallback gas calculation');
+      // FALLBACK: Rough estimate for Base Sepolia
+      // Assume: 0.001 Gwei gas price, 1 ETH = 3000 USDC
+      // Gas cost in ETH = estimatedGas * gasPrice
+      // Gas cost in USDC = Gas cost in ETH * ETH price
+      
+      // Base Sepolia typical gas price: ~0.001 Gwei = 1000000 wei
+      const gasPriceWei = 1000000n; // 0.001 Gwei
+      const gasCostWei = estimatedGas * gasPriceWei;
+      
+      // Convert Wei to ETH (1 ETH = 10^18 Wei)
+      // Then ETH to USDC (assume 3000 USDC per ETH)
+      // Then to USDC base units (6 decimals)
+      // Formula: (gasCostWei * 3000 * 10^6) / 10^18
+      //        = (gasCostWei * 3000) / 10^12
+      const usdcCost = (gasCostWei * 3000n) / 1000000000000n;
+      
+      // Minimum 0.01 USDC to cover small transactions
+      const minCost = 10000n; // 0.01 USDC (6 decimals)
+      return usdcCost > minCost ? usdcCost : minCost;
     }
   }
   

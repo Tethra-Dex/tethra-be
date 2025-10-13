@@ -36,9 +36,9 @@ export class LimitOrderService {
     const RPC_URL = process.env.RPC_URL || 'https://sepolia.base.org';
     this.provider = new ethers.JsonRpcProvider(RPC_URL);
 
-    const keeperPrivateKey = process.env.LIMIT_ORDER_KEEPER_PRIVATE_KEY;
+    const keeperPrivateKey = process.env.RELAY_PRIVATE_KEY;
     if (!keeperPrivateKey) {
-      throw new Error('LIMIT_ORDER_KEEPER_PRIVATE_KEY not configured');
+      throw new Error('RELAY_PRIVATE_KEY not configured');
     }
 
     this.keeperWallet = new ethers.Wallet(keeperPrivateKey, this.provider);

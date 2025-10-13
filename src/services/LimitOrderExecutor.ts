@@ -1,0 +1,435 @@
+/**
+ * Limit Order Executor Service
+ * 
+ * Background service that:
+ * 1. Monitors all pending limit orders from smart contract
+ * 2. Checks Pyth oracle prices
+ * 3. Executes orders when trigger price is reached
+ */
+
+import { ethers, Contract } from 'ethers';
+import { Logger } from '../utils/Logger';
+import LimitExecutorABI from '../../../tethra-sc/out/LimitExecutorV2.sol/LimitExecutorV2.json';
+
+interface PendingOrder {
+  id: bigint;
+  orderType: number;
+  trader: string;
+  symbol: string;
+  isLong: boolean;
+  collateral: bigint;
+  leverage: bigint;
+  triggerPrice: bigint;
+  positionId: bigint;
+  expiresAt: bigint;
+  maxExecutionFee: bigint;
+}
+
+export class LimitOrderExecutor {
+  private logger: Logger;
+  private provider: ethers.JsonRpcProvider;
+  private keeperWallet: ethers.Wallet;
+  private limitExecutor: Contract;
+  private limitExecutorAddress: string;
+  private priceSignerAddress: string;
+  private priceSignerWallet: ethers.Wallet;
+  private isRunning: boolean = false;
+  private checkInterval: number = 5000; // Check every 5 seconds
+  private currentPrices: Map<string, { price: bigint; timestamp: number }> = new Map();
+
+  constructor(pythPriceService: any) {
+    this.logger = new Logger('LimitOrderExecutor');
+
+    // Initialize provider
+    const RPC_URL = process.env.RPC_URL || 'https://sepolia.base.org';
+    this.provider = new ethers.JsonRpcProvider(RPC_URL);
+
+    // Keeper wallet (executes orders)
+    const keeperPrivateKey = process.env.RELAY_PRIVATE_KEY;
+    if (!keeperPrivateKey) {
+      throw new Error('RELAY_PRIVATE_KEY not configured');
+    }
+    this.keeperWallet = new ethers.Wallet(keeperPrivateKey, this.provider);
+
+    // Price signer wallet (signs prices)
+    const priceSignerKey = process.env.RELAY_PRIVATE_KEY;
+    if (!priceSignerKey) {
+      throw new Error('RELAY_PRIVATE_KEY not configured for price signing');
+    }
+    this.priceSignerWallet = new ethers.Wallet(priceSignerKey);
+    this.priceSignerAddress = this.priceSignerWallet.address;
+
+    // LimitExecutor contract
+    this.limitExecutorAddress = process.env.LIMIT_EXECUTOR_V2_ADDRESS || '';
+    if (!this.limitExecutorAddress) {
+      throw new Error('LIMIT_EXECUTOR_ADDRESS not configured');
+    }
+
+    this.limitExecutor = new Contract(
+      this.limitExecutorAddress,
+      LimitExecutorABI.abi,
+      this.keeperWallet
+    );
+
+    // Subscribe to Pyth price updates
+    if (pythPriceService) {
+      pythPriceService.onPriceUpdate((prices: any) => {
+        // Update all prices from Pyth feed
+        Object.keys(prices).forEach((symbol) => {
+          const priceData = prices[symbol];
+          // Convert price to 8 decimals (contract format)
+          const priceWith8Decimals = BigInt(Math.round(priceData.price * 100000000));
+          this.currentPrices.set(symbol, {
+            price: priceWith8Decimals,
+            timestamp: priceData.timestamp || Date.now(),
+          });
+        });
+      });
+      
+      // Load initial prices
+      const initialPrices = pythPriceService.getCurrentPrices();
+      Object.keys(initialPrices).forEach((symbol) => {
+        const priceData = initialPrices[symbol];
+        const priceWith8Decimals = BigInt(Math.round(priceData.price * 100000000));
+        this.currentPrices.set(symbol, {
+          price: priceWith8Decimals,
+          timestamp: priceData.timestamp || Date.now(),
+        });
+      });
+    }
+
+    this.logger.info('🤖 Limit Order Executor initialized');
+    this.logger.info(`   Keeper: ${this.keeperWallet.address}`);
+    this.logger.info(`   Price Signer: ${this.priceSignerAddress}`);
+    this.logger.info(`   LimitExecutor: ${this.limitExecutorAddress}`);
+  }
+
+  /**
+   * Start monitoring and executing orders
+   */
+  start() {
+    if (this.isRunning) {
+      this.logger.warn('⚠️  Executor already running');
+      return;
+    }
+
+    this.isRunning = true;
+    this.logger.info('▶️  Starting limit order executor...');
+    this.monitorLoop();
+  }
+
+  /**
+   * Stop executor
+   */
+  stop() {
+    this.isRunning = false;
+    this.logger.info('⏹️  Stopping limit order executor...');
+  }
+
+  /**
+   * Main monitoring loop
+   */
+  private async monitorLoop() {
+    while (this.isRunning) {
+      try {
+        await this.checkAndExecuteOrders();
+      } catch (error) {
+        this.logger.error('Error in monitor loop:', error);
+      }
+
+      // Wait before next check
+      await this.sleep(this.checkInterval);
+    }
+  }
+
+  /**
+   * Check all pending orders and execute if trigger met
+   */
+  private async checkAndExecuteOrders() {
+    try {
+      // Get all pending orders (you might want to implement getUserPendingOrders for all users)
+      // For now, we'll use a workaround: check nextOrderId and query each
+      const nextOrderId = await this.limitExecutor.nextOrderId();
+      const currentOrderId = Number(nextOrderId);
+
+      if (currentOrderId === 1) {
+        // No orders yet
+        return;
+      }
+
+      // Check last 100 orders (or all if less)
+      const startId = Math.max(1, currentOrderId - 100);
+      
+      for (let orderId = startId; orderId < currentOrderId; orderId++) {
+        try {
+          const order = await this.limitExecutor.getOrder(orderId);
+          
+          // Check if order is pending
+          if (order.status !== 0n) continue; // 0 = PENDING
+          
+          // Check if not cancelled
+          const isCancelled = await this.limitExecutor.cancelledOrders(orderId);
+          if (isCancelled) continue;
+
+          // Check if expired
+          const now = Math.floor(Date.now() / 1000);
+          if (now >= Number(order.expiresAt)) {
+            this.logger.warn(`⏰ Order ${orderId} expired`);
+            continue;
+          }
+
+          // Check if we have current price for this symbol
+          const priceData = this.currentPrices.get(order.symbol);
+          if (!priceData) {
+            // this.logger.debug(`No price data for ${order.symbol}`);
+            continue;
+          }
+
+          // Check if price is stale (older than 1 minute)
+          if (Date.now() - priceData.timestamp > 60000) {
+            this.logger.warn(`⏰ Stale price for ${order.symbol}`);
+            continue;
+          }
+
+          const currentPrice = priceData.price;
+          const triggerPrice = order.triggerPrice;
+
+          // Check trigger conditions based on order type
+          let shouldExecute = false;
+
+          if (order.orderType === 0n) {
+            // LIMIT_OPEN
+            if (order.isLong) {
+              // Long: execute when price <= trigger (buy low)
+              shouldExecute = currentPrice <= triggerPrice;
+            } else {
+              // Short: execute when price >= trigger (sell high)
+              shouldExecute = currentPrice >= triggerPrice;
+            }
+          } else if (order.orderType === 1n) {
+            // LIMIT_CLOSE (Take Profit)
+            if (order.isLong) {
+              // Long TP: execute when price >= trigger (sell high)
+              shouldExecute = currentPrice >= triggerPrice;
+            } else {
+              // Short TP: execute when price <= trigger (buy low to close)
+              shouldExecute = currentPrice <= triggerPrice;
+            }
+          } else if (order.orderType === 2n) {
+            // STOP_LOSS
+            if (order.isLong) {
+              // Long SL: execute when price <= trigger (cut loss)
+              shouldExecute = currentPrice <= triggerPrice;
+            } else {
+              // Short SL: execute when price >= trigger (cut loss)
+              shouldExecute = currentPrice >= triggerPrice;
+            }
+          }
+
+          if (shouldExecute) {
+            this.logger.info(`🎯 Trigger met for order ${orderId}!`);
+            this.logger.info(`   Symbol: ${order.symbol}`);
+            this.logger.info(`   Current: ${this.formatPrice(currentPrice)}, Trigger: ${this.formatPrice(triggerPrice)}`);
+            
+            await this.executeOrder(order, currentPrice);
+          }
+
+        } catch (error: any) {
+          if (!error.message?.includes('Order not found')) {
+            this.logger.error(`Error checking order ${orderId}:`, error);
+          }
+        }
+      }
+
+    } catch (error) {
+      this.logger.error('Error checking orders:', error);
+    }
+  }
+
+  /**
+   * Execute a limit order
+   */
+  private async executeOrder(order: any, currentPrice: bigint) {
+    const orderId = Number(order.id);
+    
+    try {
+      this.logger.info(`🚀 Executing order ${orderId}...`);
+
+      // Sign price
+      // IMPORTANT: Subtract 60 seconds from current time to avoid "Price in future" error
+      // This accounts for: clock drift + transaction delay + block timestamp variations
+      const timestamp = Math.floor(Date.now() / 1000) - 60;
+      const signedPrice = await this.signPrice(order.symbol, currentPrice, timestamp);
+      
+      this.logger.info('Price signature details:', {
+        symbol: signedPrice.symbol,
+        price: this.formatPrice(signedPrice.price),
+        timestamp: signedPrice.timestamp,
+        signer: this.priceSignerAddress,
+        signature: signedPrice.signature.substring(0, 20) + '...',
+      });
+
+      // Determine execution fee (use 80% of maxExecutionFee as actual fee)
+      const executionFeePaid = (order.maxExecutionFee * 80n) / 100n;
+
+      // Execute based on order type
+      let tx;
+      if (order.orderType === 0n) {
+        // LIMIT_OPEN
+        tx = await this.limitExecutor.executeLimitOpenOrder(
+          orderId,
+          signedPrice,
+          executionFeePaid,
+          { gasLimit: 600000 }
+        );
+      } else if (order.orderType === 1n) {
+        // LIMIT_CLOSE
+        tx = await this.limitExecutor.executeLimitCloseOrder(
+          orderId,
+          signedPrice,
+          executionFeePaid,
+          { gasLimit: 500000 }
+        );
+      } else if (order.orderType === 2n) {
+        // STOP_LOSS
+        tx = await this.limitExecutor.executeStopLossOrder(
+          orderId,
+          signedPrice,
+          executionFeePaid,
+          { gasLimit: 500000 }
+        );
+      } else {
+        throw new Error(`Unknown order type: ${order.orderType}`);
+      }
+
+      this.logger.info(`📤 Execution tx sent: ${tx.hash}`);
+      
+      const receipt = await tx.wait();
+      
+      this.logger.success(`✅ Order ${orderId} executed successfully!`);
+      this.logger.info(`   TX: ${receipt.hash}`);
+      this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
+      this.logger.info(`   Keeper fee: ${this.formatUsdc(executionFeePaid)}`);
+
+    } catch (error: any) {
+      this.logger.error(`❌ Failed to execute order ${orderId}:`, error.message);
+      
+      // Try to decode error from transaction receipt
+      if (error.receipt) {
+        this.logger.error('Transaction failed on-chain:', {
+          txHash: error.receipt.hash,
+          status: error.receipt.status,
+          gasUsed: error.receipt.gasUsed.toString(),
+          blockNumber: error.receipt.blockNumber,
+        });
+      }
+      
+      // Try to call contract method to get better error message
+      try {
+        // Simulate the transaction to get revert reason
+        const signedPrice = await this.signPrice(order.symbol, currentPrice, Math.floor(Date.now() / 1000));
+        const executionFeePaid = (order.maxExecutionFee * 80n) / 100n;
+        
+        await this.limitExecutor.executeLimitOpenOrder.staticCall(
+          orderId,
+          signedPrice,
+          executionFeePaid
+        );
+      } catch (simulateError: any) {
+        // Extract revert reason
+        let revertReason = 'Unknown';
+        let decodedError = '';
+        
+        if (simulateError.data) {
+          revertReason = simulateError.data;
+          // Try to decode hex error message
+          if (revertReason.startsWith('0x08c379a0')) {
+            try {
+              // Standard Error(string) format - skip function selector (4 bytes)
+              const errorData = '0x' + revertReason.slice(10); // Remove '0x08c379a0'
+              const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['string'], errorData);
+              decodedError = decoded[0];
+              this.logger.info(`Decoded error: "${decodedError}"`);
+            } catch (e) {
+              this.logger.warn('Failed to decode error hex:', e);
+            }
+          }
+        } else if (simulateError.reason) {
+          revertReason = simulateError.reason;
+        } else if (simulateError.message) {
+          revertReason = simulateError.message;
+        }
+        
+        const errorText = decodedError || revertReason;
+        this.logger.error('Contract revert reason:', errorText);
+        
+        // Log specific common errors
+        if (errorText.includes('USDC transfer failed') || errorText.includes('ERC20: insufficient allowance')) {
+          this.logger.warn('💰 User needs to approve USDC or has insufficient balance');
+        } else if (errorText.includes('Price not reached')) {
+          this.logger.warn('📊 Price condition not met (race condition)');
+        } else if (errorText.includes('Order expired')) {
+          this.logger.warn('⏰ Order has expired');
+        } else if (errorText.includes('Invalid signature') || errorText.includes('Invalid price signature')) {
+          this.logger.warn('🔏 Invalid price signature');
+        } else if (errorText.includes('Trade validation failed')) {
+          this.logger.warn('⚠️  RiskManager rejected the trade - check leverage/collateral limits');
+        } else if (errorText.includes('Price in future')) {
+          this.logger.warn('⏱️  Price timestamp is in the future (clock drift)');
+        }
+      }
+    }
+  }
+
+  /**
+   * Sign price data (backend signer)
+   */
+  private async signPrice(symbol: string, price: bigint, timestamp: number) {
+    const messageHash = ethers.solidityPackedKeccak256(
+      ['string', 'uint256', 'uint256'],
+      [symbol, price, timestamp]
+    );
+
+    const signature = await this.priceSignerWallet.signMessage(ethers.getBytes(messageHash));
+
+    return {
+      symbol,
+      price,
+      timestamp,
+      signature,
+    };
+  }
+
+  /**
+   * Format price (8 decimals to readable)
+   */
+  private formatPrice(price: bigint): string {
+    return '$' + (Number(price) / 100000000).toFixed(2);
+  }
+
+  /**
+   * Format USDC (6 decimals to readable)
+   */
+  private formatUsdc(amount: bigint): string {
+    return (Number(amount) / 1000000).toFixed(2) + ' USDC';
+  }
+
+  /**
+   * Sleep utility
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get executor status
+   */
+  getStatus() {
+    return {
+      isRunning: this.isRunning,
+      checkInterval: this.checkInterval,
+      trackedPrices: Array.from(this.currentPrices.keys()),
+      keeperAddress: this.keeperWallet.address,
+    };
+  }
+}

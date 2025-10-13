@@ -308,16 +308,27 @@ export function createRelayRoute(relayService: RelayService): Router {
         bufferBps
       });
 
+      // HOTFIX: If paymaster returns 0, use fixed fallback
+      let finalBaseCost = estimate.baseCost;
+      let finalBufferedCost = estimate.bufferedCost;
+      
+      if (finalBaseCost === 0n) {
+        // Fixed fallback: ~0.5 USDC for limit orders
+        finalBaseCost = 500000n; // 0.5 USDC (6 decimals)
+        finalBufferedCost = finalBaseCost + (finalBaseCost * BigInt(estimate.bufferBps)) / 10000n;
+        logger.warn('⚠️  Using fixed fallback execution fee: 0.5 USDC base');
+      }
+
       res.json({
         success: true,
         data: {
           orderType: estimate.orderType,
           gasEstimate: estimate.gasEstimate.toString(),
-          baseCost: estimate.baseCost.toString(),
-          baseCostFormatted: (Number(estimate.baseCost) / 1e6).toFixed(4),
+          baseCost: finalBaseCost.toString(),
+          baseCostFormatted: (Number(finalBaseCost) / 1e6).toFixed(4),
           bufferBps: estimate.bufferBps,
-          recommendedMaxExecutionFee: estimate.bufferedCost.toString(),
-          recommendedFormatted: (Number(estimate.bufferedCost) / 1e6).toFixed(4)
+          recommendedMaxExecutionFee: finalBufferedCost.toString(),
+          recommendedFormatted: (Number(finalBufferedCost) / 1e6).toFixed(4)
         },
         timestamp: Date.now()
       });

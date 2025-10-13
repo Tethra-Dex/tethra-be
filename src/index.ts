@@ -7,6 +7,7 @@ import { PythPriceService } from './services/PythPriceService';
 import { PriceSignerService } from './services/PriceSignerService';
 import { RelayService } from './services/RelayService';
 import { LimitOrderService } from './services/LimitOrderService';
+import { LimitOrderExecutor } from './services/LimitOrderExecutor';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
@@ -44,6 +45,13 @@ async function main() {
     
     // Wait for Pyth price service to initialize
     await priceService.initialize();
+    
+    // Initialize Limit Order Executor (monitors and auto-executes orders)
+    logger.info('🤖 Initializing Limit Order Executor...');
+    const limitOrderExecutor = new LimitOrderExecutor(priceService);
+    limitOrderExecutor.start();
+    limitOrderExecutorRef = limitOrderExecutor; // Store reference for graceful shutdown
+    logger.success('✅ Limit Order Executor started! Monitoring for orders...');
     
     // Check Price Signer status
     if (signerService.isInitialized()) {
@@ -177,13 +185,21 @@ async function main() {
 }
 
 // Graceful shutdown
+let limitOrderExecutorRef: any = null;
+
 process.on('SIGINT', () => {
   logger.info('Received SIGINT, shutting down gracefully...');
+  if (limitOrderExecutorRef) {
+    limitOrderExecutorRef.stop();
+  }
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   logger.info('Received SIGTERM, shutting down gracefully...');
+  if (limitOrderExecutorRef) {
+    limitOrderExecutorRef.stop();
+  }
   process.exit(0);
 });
 
