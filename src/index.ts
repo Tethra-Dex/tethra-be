@@ -6,8 +6,10 @@ import http from 'http';
 import { PythPriceService } from './services/PythPriceService';
 import { PriceSignerService } from './services/PriceSignerService';
 import { RelayService } from './services/RelayService';
+import { LimitOrderService } from './services/LimitOrderService';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
+import { createLimitOrderRoute } from './routes/limitOrders';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -38,6 +40,7 @@ async function main() {
     const priceService = new PythPriceService();
     const signerService = new PriceSignerService(); // Auto-initializes in constructor
     const relayService = new RelayService(); // Initialize relay service for gasless transactions
+    const limitOrderService = new LimitOrderService(); // Keeper interactions for limit orders
     
     // Wait for Pyth price service to initialize
     await priceService.initialize();
@@ -117,6 +120,7 @@ async function main() {
           relayTransaction: '/api/relay/transaction',
           relayBalance: '/api/relay/balance/:address',
           relayStatus: '/api/relay/status',
+          limitOrderCreate: '/api/limit-orders/create',
           health: '/health'
         },
         timestamp: Date.now()
@@ -136,6 +140,7 @@ async function main() {
     
     app.use('/api/price', createPriceRoute(priceService, signerService));
     app.use('/api/relay', createRelayRoute(relayService));
+    app.use('/api/limit-orders', createLimitOrderRoute(limitOrderService));
     
     // Global error handler
     app.use((error: Error, req: Request, res: Response, next: NextFunction) => {

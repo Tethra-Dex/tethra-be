@@ -8,6 +8,15 @@
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
 
+const LIMIT_ORDER_GAS_ESTIMATES: Readonly<Record<string, bigint>> = Object.freeze({
+  limit_open: 550000n,
+  limit_close: 420000n,
+  stop_loss: 450000n,
+});
+
+const DEFAULT_LIMIT_EXECUTION_BUFFER_BPS = 2000; // 20% safety buffer on top of gas cost
+const MAX_EXECUTION_BUFFER_BPS = 5000; // Cap buffer at 50% to avoid absurd slippage
+
 export class RelayService {
   private logger: Logger;
   private provider: ethers.JsonRpcProvider;
@@ -93,7 +102,7 @@ export class RelayService {
   
   /**
    * Calculate USDC cost for estimated gas
-   */
+  */
   async calculateGasCost(estimatedGas: bigint): Promise<bigint> {
     try {
       const usdcCost = await this.paymasterContract.calculateUsdcCost(estimatedGas);
@@ -102,6 +111,46 @@ export class RelayService {
       this.logger.error('Error calculating gas cost:', error);
       return 0n;
     }
+  }
+  
+  /**
+   * Estimate execution fee for limit orders with buffer
+   */
+  async estimateLimitExecutionFee(options: {
+    orderType?: string;
+    gasOverride?: bigint;
+    bufferBps?: number;
+  } = {}): Promise<{
+    orderType: string;
+    gasEstimate: bigint;
+    baseCost: bigint;
+    bufferedCost: bigint;
+    bufferBps: number;
+  }> {
+    const orderType = (options.orderType || 'limit_open').toLowerCase();
+    const defaultGas =
+      LIMIT_ORDER_GAS_ESTIMATES[orderType] ?? LIMIT_ORDER_GAS_ESTIMATES['limit_open'];
+
+    const gasEstimate =
+      options.gasOverride && options.gasOverride > 0n ? options.gasOverride : defaultGas;
+
+    const baseCost = await this.calculateGasCost(gasEstimate);
+
+    const rawBuffer = options.bufferBps;
+    const bufferBps =
+      rawBuffer !== undefined
+        ? Math.min(Math.max(Math.trunc(rawBuffer), 0), MAX_EXECUTION_BUFFER_BPS)
+        : DEFAULT_LIMIT_EXECUTION_BUFFER_BPS;
+
+    const bufferedCost = baseCost + (baseCost * BigInt(bufferBps)) / 10000n;
+
+    return {
+      orderType,
+      gasEstimate,
+      baseCost,
+      bufferedCost,
+      bufferBps,
+    };
   }
   
   /**

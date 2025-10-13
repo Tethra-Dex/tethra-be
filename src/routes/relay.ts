@@ -267,6 +267,73 @@ export function createRelayRoute(relayService: RelayService): Router {
   });
 
   /**
+   * Estimate recommended execution fee for limit orders
+   * GET /api/relay/limit/execution-fee?orderType=limit_open&estimatedGas=550000&bufferBps=2000
+   */
+  router.get('/limit/execution-fee', async (req: Request, res: Response) => {
+    try {
+      const orderTypeParam = typeof req.query.orderType === 'string' ? req.query.orderType : undefined;
+      const estimatedGasParam = typeof req.query.estimatedGas === 'string' ? req.query.estimatedGas : undefined;
+      const bufferBpsParam = typeof req.query.bufferBps === 'string' ? req.query.bufferBps : undefined;
+
+      let gasOverride: bigint | undefined;
+      if (estimatedGasParam && estimatedGasParam.trim().length > 0) {
+        try {
+          gasOverride = BigInt(estimatedGasParam);
+        } catch {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid estimatedGas value',
+            timestamp: Date.now()
+          });
+        }
+      }
+
+      let bufferBps: number | undefined;
+      if (bufferBpsParam && bufferBpsParam.trim().length > 0) {
+        const parsed = Number(bufferBpsParam);
+        if (!Number.isFinite(parsed)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid bufferBps value',
+            timestamp: Date.now()
+          });
+        }
+        bufferBps = parsed;
+      }
+
+      const estimate = await relayService.estimateLimitExecutionFee({
+        orderType: orderTypeParam,
+        gasOverride,
+        bufferBps
+      });
+
+      res.json({
+        success: true,
+        data: {
+          orderType: estimate.orderType,
+          gasEstimate: estimate.gasEstimate.toString(),
+          baseCost: estimate.baseCost.toString(),
+          baseCostFormatted: (Number(estimate.baseCost) / 1e6).toFixed(4),
+          bufferBps: estimate.bufferBps,
+          recommendedMaxExecutionFee: estimate.bufferedCost.toString(),
+          recommendedFormatted: (Number(estimate.bufferedCost) / 1e6).toFixed(4)
+        },
+        timestamp: Date.now()
+      });
+
+    } catch (error) {
+      logger.error('Error estimating limit execution fee:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to estimate execution fee',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: Date.now()
+      });
+    }
+  });
+
+  /**
    * Get relay service status
    * GET /api/relay/status
    */
