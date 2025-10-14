@@ -8,6 +8,7 @@ import { PriceSignerService } from './services/PriceSignerService';
 import { RelayService } from './services/RelayService';
 import { LimitOrderService } from './services/LimitOrderService';
 import { LimitOrderExecutor } from './services/LimitOrderExecutor';
+import { PositionMonitor } from './services/PositionMonitor';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
@@ -52,6 +53,13 @@ async function main() {
     limitOrderExecutor.start();
     limitOrderExecutorRef = limitOrderExecutor; // Store reference for graceful shutdown
     logger.success('✅ Limit Order Executor started! Monitoring for orders...');
+
+    // Initialize Position Monitor (auto-liquidation for isolated margin)
+    logger.info('🔍 Initializing Position Monitor (Auto-Liquidation)...');
+    const positionMonitor = new PositionMonitor(priceService);
+    positionMonitor.start();
+    positionMonitorRef = positionMonitor; // Store reference for graceful shutdown
+    logger.success('✅ Position Monitor started! Monitoring for liquidations...');
     
     // Check Price Signer status
     if (signerService.isInitialized()) {
@@ -186,11 +194,15 @@ async function main() {
 
 // Graceful shutdown
 let limitOrderExecutorRef: any = null;
+let positionMonitorRef: any = null;
 
 process.on('SIGINT', () => {
   logger.info('Received SIGINT, shutting down gracefully...');
   if (limitOrderExecutorRef) {
     limitOrderExecutorRef.stop();
+  }
+  if (positionMonitorRef) {
+    positionMonitorRef.stop();
   }
   process.exit(0);
 });
@@ -199,6 +211,9 @@ process.on('SIGTERM', () => {
   logger.info('Received SIGTERM, shutting down gracefully...');
   if (limitOrderExecutorRef) {
     limitOrderExecutorRef.stop();
+  }
+  if (positionMonitorRef) {
+    positionMonitorRef.stop();
   }
   process.exit(0);
 });
