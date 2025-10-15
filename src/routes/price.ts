@@ -142,6 +142,7 @@ export function createPriceRoute(
       res.json({
         success: true,
         data: {
+          symbol: symbol, // Add symbol for contract compatibility
           ...signedData,
           priceUSD: currentPrice.price, // Human readable price
           confidence: currentPrice.confidence,

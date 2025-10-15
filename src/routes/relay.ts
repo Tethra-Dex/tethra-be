@@ -217,6 +217,56 @@ export function createRelayRoute(relayService: RelayService): Router {
   });
 
   /**
+   * GASLESS CANCEL ORDER - HACKATHON MODE 🚀
+   * POST /api/relay/cancel-order
+   * Body: { userAddress: string, orderId: string, signature: string }
+   */
+  router.post('/cancel-order', async (req: Request, res: Response) => {
+    try {
+      const { userAddress, orderId, signature } = req.body;
+      
+      if (!userAddress || !orderId || !signature) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields',
+          required: ['userAddress', 'orderId', 'signature'],
+          timestamp: Date.now()
+        });
+      }
+
+      logger.info(`❌ GASLESS CANCEL: Order ${orderId} for user ${userAddress}`);
+
+      // Call RelayService to cancel order gaslessly
+      const result = await relayService.cancelOrderGasless(
+        userAddress,
+        orderId,
+        signature
+      );
+
+      logger.success(`✅ Order ${orderId} cancelled! TX: ${result.txHash}`);
+
+      res.json({
+        success: true,
+        data: {
+          txHash: result.txHash,
+          orderId: orderId,
+          explorerUrl: `https://sepolia.basescan.org/tx/${result.txHash}`
+        },
+        timestamp: Date.now()
+      });
+
+    } catch (error) {
+      logger.error('Error cancelling order gasless:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to cancel order',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: Date.now()
+      });
+    }
+  });
+
+  /**
    * GASLESS CLOSE POSITION - HACKATHON MODE 🚀
    * POST /api/relay/close-position
    * Body: { userAddress: string, positionId: string, symbol: string }
