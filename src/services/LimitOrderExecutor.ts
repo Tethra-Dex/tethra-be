@@ -22,7 +22,6 @@ interface PendingOrder {
   triggerPrice: bigint;
   positionId: bigint;
   expiresAt: bigint;
-  maxExecutionFee: bigint;
 }
 
 export class LimitOrderExecutor {
@@ -269,9 +268,6 @@ export class LimitOrderExecutor {
         signature: signedPrice.signature.substring(0, 20) + '...',
       });
 
-      // Determine execution fee (use 80% of maxExecutionFee as actual fee)
-      const executionFeePaid = (order.maxExecutionFee * 80n) / 100n;
-
       // Execute based on order type
       let tx;
       if (order.orderType === 0n) {
@@ -279,7 +275,6 @@ export class LimitOrderExecutor {
         tx = await this.limitExecutor.executeLimitOpenOrder(
           orderId,
           signedPrice,
-          executionFeePaid,
           { gasLimit: 600000 }
         );
       } else if (order.orderType === 1n) {
@@ -287,7 +282,6 @@ export class LimitOrderExecutor {
         tx = await this.limitExecutor.executeLimitCloseOrder(
           orderId,
           signedPrice,
-          executionFeePaid,
           { gasLimit: 500000 }
         );
       } else if (order.orderType === 2n) {
@@ -295,7 +289,6 @@ export class LimitOrderExecutor {
         tx = await this.limitExecutor.executeStopLossOrder(
           orderId,
           signedPrice,
-          executionFeePaid,
           { gasLimit: 500000 }
         );
       } else {
@@ -309,7 +302,6 @@ export class LimitOrderExecutor {
       this.logger.success(`✅ Order ${orderId} executed successfully!`);
       this.logger.info(`   TX: ${receipt.hash}`);
       this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
-      this.logger.info(`   Keeper fee: ${this.formatUsdc(executionFeePaid)}`);
 
     } catch (error: any) {
       this.logger.error(`❌ Failed to execute order ${orderId}:`, error.message);
@@ -328,12 +320,10 @@ export class LimitOrderExecutor {
       try {
         // Simulate the transaction to get revert reason
         const signedPrice = await this.signPrice(order.symbol, currentPrice, Math.floor(Date.now() / 1000));
-        const executionFeePaid = (order.maxExecutionFee * 80n) / 100n;
         
         await this.limitExecutor.executeLimitOpenOrder.staticCall(
           orderId,
-          signedPrice,
-          executionFeePaid
+          signedPrice
         );
       } catch (simulateError: any) {
         // Extract revert reason

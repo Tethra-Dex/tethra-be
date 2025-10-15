@@ -9,14 +9,12 @@ export interface KeeperLimitOpenOrderRequest {
   collateral: string; // base units (USDC 6 decimals)
   leverage: string; // integer string
   triggerPrice: string; // base units (8 decimals)
-  maxExecutionFee: string; // base units (USDC 6 decimals)
   nonce: string;
   expiresAt: string;
   signature: string;
   metadata?: {
     collateralUsd?: string;
     triggerPriceUsd?: string;
-    maxExecutionFeeUsd?: string;
   };
 }
 
@@ -84,7 +82,6 @@ export class LimitOrderService {
       collateral,
       leverage,
       triggerPrice,
-      maxExecutionFee,
       nonce,
       expiresAt,
       signature,
@@ -98,7 +95,6 @@ export class LimitOrderService {
       leverage,
       collateral,
       triggerPrice,
-      maxExecutionFee,
       nonce,
       expiresAt,
       metadata,
@@ -107,7 +103,6 @@ export class LimitOrderService {
     const collateralBig = this.normalizeBigNumberish(collateral, 'collateral');
     const leverageBig = this.normalizeBigNumberish(leverage, 'leverage');
     const triggerPriceBig = this.normalizeBigNumberish(triggerPrice, 'triggerPrice');
-    const maxExecutionFeeBig = this.normalizeBigNumberish(maxExecutionFee, 'maxExecutionFee');
     const nonceBig = this.normalizeBigNumberish(nonce, 'nonce');
     const expiresAtBig = this.normalizeBigNumberish(expiresAt, 'expiresAt');
 
@@ -125,7 +120,6 @@ export class LimitOrderService {
       collateralBig,
       leverageBig,
       triggerPriceBig,
-      maxExecutionFeeBig,
       nonceBig,
       expiresAtBig,
       signature

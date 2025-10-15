@@ -15,7 +15,6 @@ export function createLimitOrderRoute(limitOrderService: LimitOrderService) {
       collateral,
       leverage,
       triggerPrice,
-      maxExecutionFee,
       nonce,
       expiresAt,
       signature,
@@ -50,7 +49,6 @@ export function createLimitOrderRoute(limitOrderService: LimitOrderService) {
       collateral,
       leverage,
       triggerPrice,
-      maxExecutionFee,
       nonce,
       expiresAt,
     };
@@ -80,7 +78,6 @@ export function createLimitOrderRoute(limitOrderService: LimitOrderService) {
       collateral: String(collateral),
       leverage: String(leverage),
       triggerPrice: String(triggerPrice),
-      maxExecutionFee: String(maxExecutionFee),
       nonce: String(nonce),
       expiresAt: String(expiresAt),
       signature,
