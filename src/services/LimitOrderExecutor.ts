@@ -60,7 +60,7 @@ export class LimitOrderExecutor {
     this.priceSignerAddress = this.priceSignerWallet.address;
 
     // LimitExecutor contract
-    this.limitExecutorAddress = process.env.LIMIT_EXECUTOR_V2_ADDRESS || '';
+    this.limitExecutorAddress = process.env.LIMIT_EXECUTOR_ADDRESS || '';
     if (!this.limitExecutorAddress) {
       throw new Error('LIMIT_EXECUTOR_ADDRESS not configured');
     }
