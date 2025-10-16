@@ -63,17 +63,11 @@ export interface CreateGridCellRequest {
   collateralPerOrder: string;
 }
 
-export interface PlaceGridOrdersRequest {
-  gridSessionId: string;
-  cells: CreateGridCellRequest[];
-  // Each cell will have N orders created (N = clickCount)
-  // Frontend must provide signatures for each order
-  signatures: {
-    cellIndex: number; // Index in cells array
-    orderSignatures: string[]; // Array of signatures (length = clickCount)
-    nonces: string[]; // Array of nonces (length = clickCount)
-  }[];
-}
+/**
+ * ⚠️ DEPRECATED: PlaceGridOrdersRequest
+ * This was used for on-chain order creation which is expensive.
+ * For Tap-to-Trade, use BatchCreateTapToTradeOrdersRequest from tapToTrade.ts instead.
+ */
 
 export interface GridSessionResponse {
   gridSession: GridSession;

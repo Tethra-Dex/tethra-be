@@ -1,17 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { GridTradingService } from '../services/GridTradingService';
-import { LimitOrderService } from '../services/LimitOrderService';
 import { Logger } from '../utils/Logger';
 import {
   CreateGridSessionRequest,
-  PlaceGridOrdersRequest,
 } from '../types/gridTrading';
 
 const logger = new Logger('GridTradingRoutes');
 
 export function createGridTradingRoute(
-  gridService: GridTradingService,
-  limitOrderService: LimitOrderService
+  gridService: GridTradingService
 ): Router {
   const router = Router();
 
@@ -49,127 +46,21 @@ export function createGridTradingRoute(
 
   /**
    * POST /api/grid/place-orders
-   * Place orders for grid cells (batch creation)
+   * ⚠️ DEPRECATED: Use /api/tap-to-trade/batch-create instead
    *
-   * This endpoint:
-   * 1. Creates grid cells in memory
-   * 2. For each cell, creates N on-chain orders (N = clickCount)
-   * 3. Links order IDs back to cells
+   * This endpoint creates orders ON-CHAIN which is expensive.
+   * For Tap-to-Trade, use backend-only storage to save gas.
    */
-  router.post('/place-orders', async (req: Request, res: Response) => {
-    try {
-      const params: PlaceGridOrdersRequest = req.body;
-
-      // Validation
-      if (!params.gridSessionId || !params.cells || params.cells.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields: gridSessionId, cells',
-        });
-      }
-
-      const session = gridService.getGridSession(params.gridSessionId);
-      if (!session) {
-        return res.status(404).json({
-          success: false,
-          error: 'Grid session not found',
-        });
-      }
-
-      if (!session.isActive) {
-        return res.status(400).json({
-          success: false,
-          error: 'Grid session is not active',
-        });
-      }
-
-      const results: any[] = [];
-
-      // Process each cell
-      for (let i = 0; i < params.cells.length; i++) {
-        const cellParams = params.cells[i];
-        const cellSignatures = params.signatures.find((s) => s.cellIndex === i);
-
-        if (!cellSignatures) {
-          logger.error(`No signatures provided for cell at index ${i}`);
-          continue;
-        }
-
-        if (cellSignatures.orderSignatures.length !== cellParams.clickCount) {
-          logger.error(
-            `Signature count mismatch for cell ${i}: expected ${cellParams.clickCount}, got ${cellSignatures.orderSignatures.length}`
-          );
-          continue;
-        }
-
-        // Create grid cell in memory
-        const cell = gridService.createGridCell(cellParams);
-
-        // Create N on-chain orders (N = clickCount)
-        const orderIds: string[] = [];
-        for (let j = 0; j < cellParams.clickCount; j++) {
-          try {
-            const signature = cellSignatures.orderSignatures[j];
-            const nonce = cellSignatures.nonces[j];
-
-            // Calculate expiration (use cell's endTime)
-            const expiresAt = cellParams.endTime.toString();
-
-            // Create order on-chain via LimitExecutorV2
-            const orderResult = await limitOrderService.createLimitOpenOrder({
-              trader: session.trader,
-              symbol: session.symbol,
-              isLong: cellParams.isLong,
-              collateral: cellParams.collateralPerOrder,
-              leverage: session.leverage.toString(),
-              triggerPrice: cellParams.triggerPrice,
-              nonce,
-              expiresAt,
-              signature,
-              metadata: {
-                collateralUsd: cellParams.collateralPerOrder,
-                triggerPriceUsd: cellParams.triggerPrice,
-              },
-            });
-
-            // Link order to cell
-            gridService.addOrderToCell(cell.id, orderResult.orderId);
-            orderIds.push(orderResult.orderId);
-
-            logger.info(
-              `✅ Created order ${j + 1}/${cellParams.clickCount} for cell ${cell.id}: ${orderResult.orderId}`
-            );
-          } catch (error: any) {
-            logger.error(`Failed to create order ${j + 1} for cell ${i}:`, error);
-            // Continue with other orders even if one fails
-          }
-        }
-
-        results.push({
-          cellId: cell.id,
-          position: { x: cellParams.cellX, y: cellParams.cellY },
-          ordersCreated: orderIds.length,
-          expectedOrders: cellParams.clickCount,
-          orderIds,
-        });
-      }
-
-      res.json({
-        success: true,
-        data: {
-          gridSessionId: params.gridSessionId,
-          cellsProcessed: results.length,
-          results,
-        },
-        message: 'Grid orders placed successfully',
-      });
-    } catch (error: any) {
-      logger.error('Error placing grid orders:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to place grid orders',
-      });
-    }
+  router.post('/place-orders', async (_req: Request, res: Response) => {
+    res.status(410).json({
+      success: false,
+      error: 'This endpoint is deprecated for Tap-to-Trade',
+      message: 'Please use POST /api/tap-to-trade/batch-create instead',
+      recommendation: {
+        endpoint: '/api/tap-to-trade/batch-create',
+        benefit: 'Backend-only storage, no gas fee for order creation',
+      },
+    });
   });
 
   /**
@@ -289,7 +180,7 @@ export function createGridTradingRoute(
    * GET /api/grid/stats
    * Get grid trading statistics
    */
-  router.get('/stats', (req: Request, res: Response) => {
+  router.get('/stats', (_req: Request, res: Response) => {
     try {
       const stats = gridService.getStats();
 
@@ -310,7 +201,7 @@ export function createGridTradingRoute(
    * GET /api/grid/active-cells
    * Get all active cells (for monitoring/debugging)
    */
-  router.get('/active-cells', (req: Request, res: Response) => {
+  router.get('/active-cells', (_req: Request, res: Response) => {
     try {
       const cells = gridService.getActiveCells();
 

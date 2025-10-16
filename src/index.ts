@@ -11,11 +11,14 @@ import { LimitOrderExecutor } from './services/LimitOrderExecutor';
 import { PositionMonitor } from './services/PositionMonitor';
 import { GridTradingService } from './services/GridTradingService';
 import { TPSLMonitor } from './services/TPSLMonitor';
+import { TapToTradeService } from './services/TapToTradeService';
+import { TapToTradeExecutor } from './services/TapToTradeExecutor';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
 import { createGridTradingRoute } from './routes/gridTrading';
 import { createTPSLRoute } from './routes/tpsl';
+import { createTapToTradeRoute } from './routes/tapToTrade';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -30,7 +33,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
+app.use((req: Request, _res: Response, next: NextFunction) => {
   logger.info(`${req.method} ${req.path}`, {
     ip: req.ip,
     userAgent: req.get('User-Agent')
@@ -48,6 +51,7 @@ async function main() {
     const relayService = new RelayService(); // Initialize relay service for gasless transactions
     const limitOrderService = new LimitOrderService(); // Keeper interactions for limit orders
     const gridTradingService = new GridTradingService(); // Grid trading in-memory storage
+    const tapToTradeService = new TapToTradeService(); // Tap-to-trade backend-only orders
 
     // Wait for Pyth price service to initialize
     await priceService.initialize();
@@ -58,6 +62,13 @@ async function main() {
     limitOrderExecutor.start();
     limitOrderExecutorRef = limitOrderExecutor; // Store reference for graceful shutdown
     logger.success('✅ Limit Order Executor started! Monitoring for orders...');
+
+    // Initialize Tap-to-Trade Executor (monitors backend-only orders and executes directly)
+    logger.info('🎯 Initializing Tap-to-Trade Executor...');
+    const tapToTradeExecutor = new TapToTradeExecutor(priceService, tapToTradeService);
+    tapToTradeExecutor.start();
+    tapToTradeExecutorRef = tapToTradeExecutor; // Store reference for graceful shutdown
+    logger.success('✅ Tap-to-Trade Executor started! Monitoring for tap-to-trade orders...');
 
     // Initialize Position Monitor (auto-liquidation for isolated margin)
     logger.info('🔍 Initializing Position Monitor (Auto-Liquidation)...');
@@ -158,13 +169,19 @@ async function main() {
           tpslGetAll: '/api/tpsl/all',
           tpslDelete: '/api/tpsl/:positionId',
           tpslStatus: '/api/tpsl/status',
+          tapToTradeCreateOrder: '/api/tap-to-trade/create-order',
+          tapTotradeBatchCreate: '/api/tap-to-trade/batch-create',
+          tapToTradeOrders: '/api/tap-to-trade/orders',
+          tapTotradePending: '/api/tap-to-trade/pending',
+          tapTotradeCancelOrder: '/api/tap-to-trade/cancel-order',
+          tapToTradeStats: '/api/tap-to-trade/stats',
           health: '/health'
         },
         timestamp: Date.now()
       });
     });
     
-    app.get('/health', (req: Request, res: Response) => {
+    app.get('/health', (_req: Request, res: Response) => {
       const healthStatus = priceService.getHealthStatus();
       res.json({
         success: true,
@@ -180,9 +197,10 @@ async function main() {
     app.use('/api/limit-orders', createLimitOrderRoute(limitOrderService));
     app.use('/api/grid', createGridTradingRoute(gridTradingService, limitOrderService));
     app.use('/api/tpsl', createTPSLRoute(tpslMonitor));
+    app.use('/api/tap-to-trade', createTapToTradeRoute(tapToTradeService));
     
     // Global error handler
-    app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
+    app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
       logger.error('Unhandled API error:', error);
       res.status(500).json({
         error: 'Internal server error',
@@ -219,6 +237,7 @@ async function main() {
 let limitOrderExecutorRef: any = null;
 let positionMonitorRef: any = null;
 let tpslMonitorRef: any = null;
+let tapToTradeExecutorRef: any = null;
 
 process.on('SIGINT', () => {
   logger.info('Received SIGINT, shutting down gracefully...');
@@ -230,6 +249,9 @@ process.on('SIGINT', () => {
   }
   if (tpslMonitorRef) {
     tpslMonitorRef.stop();
+  }
+  if (tapToTradeExecutorRef) {
+    tapToTradeExecutorRef.stop();
   }
   process.exit(0);
 });
@@ -244,6 +266,9 @@ process.on('SIGTERM', () => {
   }
   if (tpslMonitorRef) {
     tpslMonitorRef.stop();
+  }
+  if (tapToTradeExecutorRef) {
+    tapToTradeExecutorRef.stop();
   }
   process.exit(0);
 });
