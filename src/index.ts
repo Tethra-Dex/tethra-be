@@ -9,9 +9,11 @@ import { RelayService } from './services/RelayService';
 import { LimitOrderService } from './services/LimitOrderService';
 import { LimitOrderExecutor } from './services/LimitOrderExecutor';
 import { PositionMonitor } from './services/PositionMonitor';
+import { GridTradingService } from './services/GridTradingService';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
+import { createGridTradingRoute } from './routes/gridTrading';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -43,13 +45,14 @@ async function main() {
     const signerService = new PriceSignerService(); // Auto-initializes in constructor
     const relayService = new RelayService(); // Initialize relay service for gasless transactions
     const limitOrderService = new LimitOrderService(); // Keeper interactions for limit orders
-    
+    const gridTradingService = new GridTradingService(); // Grid trading in-memory storage
+
     // Wait for Pyth price service to initialize
     await priceService.initialize();
-    
+
     // Initialize Limit Order Executor (monitors and auto-executes orders)
     logger.info('🤖 Initializing Limit Order Executor...');
-    const limitOrderExecutor = new LimitOrderExecutor(priceService);
+    const limitOrderExecutor = new LimitOrderExecutor(priceService, gridTradingService);
     limitOrderExecutor.start();
     limitOrderExecutorRef = limitOrderExecutor; // Store reference for graceful shutdown
     logger.success('✅ Limit Order Executor started! Monitoring for orders...');
@@ -137,6 +140,10 @@ async function main() {
           relayBalance: '/api/relay/balance/:address',
           relayStatus: '/api/relay/status',
           limitOrderCreate: '/api/limit-orders/create',
+          gridTradingCreateSession: '/api/grid/create-session',
+          gridTradingPlaceOrders: '/api/grid/place-orders',
+          gridTradingUserGrids: '/api/grid/user/:trader',
+          gridTradingStats: '/api/grid/stats',
           health: '/health'
         },
         timestamp: Date.now()
@@ -157,6 +164,7 @@ async function main() {
     app.use('/api/price', createPriceRoute(priceService, signerService));
     app.use('/api/relay', createRelayRoute(relayService));
     app.use('/api/limit-orders', createLimitOrderRoute(limitOrderService));
+    app.use('/api/grid', createGridTradingRoute(gridTradingService, limitOrderService));
     
     // Global error handler
     app.use((error: Error, req: Request, res: Response, next: NextFunction) => {

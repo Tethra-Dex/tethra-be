@@ -1,15 +1,18 @@
 /**
  * Limit Order Executor Service
- * 
+ *
  * Background service that:
  * 1. Monitors all pending limit orders from smart contract
  * 2. Checks Pyth oracle prices
  * 3. Executes orders when trigger price is reached
+ * 4. Monitors grid trading cells for time window validation
  */
 
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
 import LimitExecutorABI from '../../../tethra-sc/out/LimitExecutorV2.sol/LimitExecutorV2.json';
+import { GridTradingService } from './GridTradingService';
+import { GridCell, GridCellStatus } from '../types/gridTrading';
 
 interface PendingOrder {
   id: bigint;
@@ -35,8 +38,12 @@ export class LimitOrderExecutor {
   private isRunning: boolean = false;
   private checkInterval: number = 5000; // Check every 5 seconds
   private currentPrices: Map<string, { price: bigint; timestamp: number }> = new Map();
+  private gridService?: GridTradingService; // Optional grid trading service
+  private lastCleanupTime: number = 0;
+  private cleanupInterval: number = 30000; // Cleanup expired cells every 30 seconds
 
-  constructor(pythPriceService: any) {
+  constructor(pythPriceService: any, gridService?: GridTradingService) {
+    this.gridService = gridService;
     this.logger = new Logger('LimitOrderExecutor');
 
     // Initialize provider
@@ -132,12 +139,80 @@ export class LimitOrderExecutor {
     while (this.isRunning) {
       try {
         await this.checkAndExecuteOrders();
+
+        // Grid trading: cleanup expired cells periodically
+        if (this.gridService && Date.now() - this.lastCleanupTime > this.cleanupInterval) {
+          await this.cleanupExpiredGridCells();
+          this.lastCleanupTime = Date.now();
+        }
       } catch (error) {
         this.logger.error('Error in monitor loop:', error);
       }
 
       // Wait before next check
       await this.sleep(this.checkInterval);
+    }
+  }
+
+  /**
+   * Cleanup expired grid cells (called periodically)
+   */
+  private async cleanupExpiredGridCells() {
+    if (!this.gridService) return;
+
+    try {
+      const expiredCount = this.gridService.cleanupExpiredCells();
+      if (expiredCount > 0) {
+        this.logger.info(`🧹 Cleaned up ${expiredCount} expired grid cells`);
+      }
+    } catch (error) {
+      this.logger.error('Error cleaning up expired cells:', error);
+    }
+  }
+
+  /**
+   * Check if order is part of grid trading and validate time window
+   * Returns true if order should be executed, false if outside time window
+   */
+  private shouldExecuteGridOrder(orderId: string): boolean {
+    if (!this.gridService) return true; // No grid service, allow all orders
+
+    try {
+      // Find grid cell that contains this order
+      const activeCells = this.gridService.getActiveCells();
+      const cell = activeCells.find(c => c.orderIds.includes(orderId));
+
+      if (!cell) {
+        // Not a grid order, allow execution
+        return true;
+      }
+
+      const now = Math.floor(Date.now() / 1000); // Unix timestamp
+
+      // Check if within time window
+      if (now < cell.startTime) {
+        this.logger.debug(`⏰ Order ${orderId} not yet in time window (starts at ${cell.startTime})`);
+        return false;
+      }
+
+      if (now > cell.endTime) {
+        this.logger.warn(`⏰ Order ${orderId} time window expired (ended at ${cell.endTime})`);
+
+        // Mark cell as expired
+        this.gridService.updateCellStatus(cell.id, GridCellStatus.EXPIRED);
+
+        // TODO: Cancel order on-chain (need gasless cancel implementation)
+        // For now, just prevent execution
+        return false;
+      }
+
+      // Within time window, allow execution
+      return true;
+
+    } catch (error) {
+      this.logger.error('Error checking grid order time window:', error);
+      // On error, allow execution to be safe
+      return true;
     }
   }
 
@@ -226,10 +301,17 @@ export class LimitOrderExecutor {
           }
 
           if (shouldExecute) {
+            // Grid trading: Check time window validation
+            const canExecute = this.shouldExecuteGridOrder(orderId.toString());
+            if (!canExecute) {
+              // Order is outside time window, skip execution
+              continue;
+            }
+
             this.logger.info(`🎯 Trigger met for order ${orderId}!`);
             this.logger.info(`   Symbol: ${order.symbol}`);
             this.logger.info(`   Current: ${this.formatPrice(currentPrice)}, Trigger: ${this.formatPrice(triggerPrice)}`);
-            
+
             await this.executeOrder(order, currentPrice);
           }
 
