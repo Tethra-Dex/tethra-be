@@ -85,3 +85,29 @@ export const SUPPORTED_ASSETS: AssetConfig[] = [
     tradingViewSymbol: 'BINANCE:LINKUSDT'
   }
 ];
+
+// TP/SL Types
+export interface TPSLConfig {
+  positionId: number;
+  trader: string;
+  symbol: string;
+  isLong: boolean;
+  entryPrice: bigint;
+  takeProfit?: bigint;  // Price in 8 decimals (e.g., 100000000 = $1.00)
+  stopLoss?: bigint;    // Price in 8 decimals
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TPSLCreateRequest {
+  positionId: number;
+  takeProfit?: string;  // Price as string to avoid JS number precision issues
+  stopLoss?: string;    // Price as string
+}
+
+export interface TPSLResponse {
+  success: boolean;
+  message: string;
+  data?: TPSLConfig;
+  error?: string;
+}

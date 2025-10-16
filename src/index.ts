@@ -10,10 +10,12 @@ import { LimitOrderService } from './services/LimitOrderService';
 import { LimitOrderExecutor } from './services/LimitOrderExecutor';
 import { PositionMonitor } from './services/PositionMonitor';
 import { GridTradingService } from './services/GridTradingService';
+import { TPSLMonitor } from './services/TPSLMonitor';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
 import { createGridTradingRoute } from './routes/gridTrading';
+import { createTPSLRoute } from './routes/tpsl';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -63,6 +65,13 @@ async function main() {
     positionMonitor.start();
     positionMonitorRef = positionMonitor; // Store reference for graceful shutdown
     logger.success('✅ Position Monitor started! Monitoring for liquidations...');
+    
+    // Initialize TP/SL Monitor (Take Profit / Stop Loss)
+    logger.info('🎯 Initializing TP/SL Monitor...');
+    const tpslMonitor = new TPSLMonitor(priceService);
+    tpslMonitor.start();
+    tpslMonitorRef = tpslMonitor; // Store reference for graceful shutdown
+    logger.success('✅ TP/SL Monitor started! Ready to execute TP/SL orders...');
     
     // Check Price Signer status
     if (signerService.isInitialized()) {
@@ -144,6 +153,11 @@ async function main() {
           gridTradingPlaceOrders: '/api/grid/place-orders',
           gridTradingUserGrids: '/api/grid/user/:trader',
           gridTradingStats: '/api/grid/stats',
+          tpslSet: '/api/tpsl/set',
+          tpslGet: '/api/tpsl/:positionId',
+          tpslGetAll: '/api/tpsl/all',
+          tpslDelete: '/api/tpsl/:positionId',
+          tpslStatus: '/api/tpsl/status',
           health: '/health'
         },
         timestamp: Date.now()
@@ -165,6 +179,7 @@ async function main() {
     app.use('/api/relay', createRelayRoute(relayService));
     app.use('/api/limit-orders', createLimitOrderRoute(limitOrderService));
     app.use('/api/grid', createGridTradingRoute(gridTradingService, limitOrderService));
+    app.use('/api/tpsl', createTPSLRoute(tpslMonitor));
     
     // Global error handler
     app.use((error: Error, req: Request, res: Response, next: NextFunction) => {
@@ -203,6 +218,7 @@ async function main() {
 // Graceful shutdown
 let limitOrderExecutorRef: any = null;
 let positionMonitorRef: any = null;
+let tpslMonitorRef: any = null;
 
 process.on('SIGINT', () => {
   logger.info('Received SIGINT, shutting down gracefully...');
@@ -211,6 +227,9 @@ process.on('SIGINT', () => {
   }
   if (positionMonitorRef) {
     positionMonitorRef.stop();
+  }
+  if (tpslMonitorRef) {
+    tpslMonitorRef.stop();
   }
   process.exit(0);
 });
@@ -222,6 +241,9 @@ process.on('SIGTERM', () => {
   }
   if (positionMonitorRef) {
     positionMonitorRef.stop();
+  }
+  if (tpslMonitorRef) {
+    tpslMonitorRef.stop();
   }
   process.exit(0);
 });
