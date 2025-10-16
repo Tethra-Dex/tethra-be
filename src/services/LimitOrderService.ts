@@ -12,6 +12,8 @@ export interface KeeperLimitOpenOrderRequest {
   nonce: string;
   expiresAt: string;
   signature: string;
+  takeProfit?: string; // optional TP price (8 decimals)
+  stopLoss?: string; // optional SL price (8 decimals)
   metadata?: {
     collateralUsd?: string;
     triggerPriceUsd?: string;
@@ -29,6 +31,8 @@ export class LimitOrderService {
   private readonly keeperWallet: ethers.Wallet;
   private readonly limitExecutor: Contract;
   private readonly limitExecutorAddress: string;
+  // Store TP/SL preferences for pending limit orders
+  private orderTPSLMap: Map<string, { takeProfit?: bigint; stopLoss?: bigint }> = new Map();
 
   constructor() {
     const RPC_URL = process.env.RPC_URL || 'https://sepolia.base.org';
@@ -113,6 +117,22 @@ export class LimitOrderService {
     const nextOrderId = await this.getNextOrderId();
     this.logger.info(`➡️  Next order id: ${nextOrderId.toString()}`);
 
+    // Store TP/SL preferences if provided
+    if (request.takeProfit || request.stopLoss) {
+      const tpslData: { takeProfit?: bigint; stopLoss?: bigint } = {};
+      if (request.takeProfit) {
+        tpslData.takeProfit = this.normalizeBigNumberish(request.takeProfit, 'takeProfit');
+      }
+      if (request.stopLoss) {
+        tpslData.stopLoss = this.normalizeBigNumberish(request.stopLoss, 'stopLoss');
+      }
+      this.orderTPSLMap.set(nextOrderId.toString(), tpslData);
+      this.logger.info(`💾 Stored TP/SL for order ${nextOrderId}:`, {
+        takeProfit: request.takeProfit,
+        stopLoss: request.stopLoss,
+      });
+    }
+
     const tx = await this.limitExecutor.createLimitOpenOrder(
       trader,
       symbol,
@@ -140,5 +160,19 @@ export class LimitOrderService {
       orderId: nextOrderId.toString(),
       txHash: tx.hash,
     };
+  }
+
+  /**
+   * Get stored TP/SL for a limit order
+   */
+  getOrderTPSL(orderId: string): { takeProfit?: bigint; stopLoss?: bigint } | undefined {
+    return this.orderTPSLMap.get(orderId);
+  }
+
+  /**
+   * Remove TP/SL data after order is executed or cancelled
+   */
+  clearOrderTPSL(orderId: string): void {
+    this.orderTPSLMap.delete(orderId);
   }
 }

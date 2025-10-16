@@ -78,6 +78,40 @@ export function createTPSLRoute(tpslMonitor: TPSLMonitor): Router {
   });
 
   /**
+   * Get all TP/SL configs
+   * GET /api/tpsl/all
+   * NOTE: Must be before /:positionId route
+   */
+  router.get('/all', (req: Request, res: Response) => {
+    try {
+      const configs = tpslMonitor.getAllTPSL();
+
+      // Convert BigInt to string for JSON response
+      const responseConfigs = configs.map(config => ({
+        ...config,
+        entryPrice: config.entryPrice.toString(),
+        takeProfit: config.takeProfit?.toString(),
+        stopLoss: config.stopLoss?.toString()
+      }));
+
+      res.json({
+        success: true,
+        data: responseConfigs,
+        count: responseConfigs.length,
+        timestamp: Date.now()
+      });
+
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get TP/SL configs',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: Date.now()
+      });
+    }
+  });
+
+  /**
    * Get TP/SL config for a position
    * GET /api/tpsl/:positionId
    */
@@ -121,39 +155,6 @@ export function createTPSLRoute(tpslMonitor: TPSLMonitor): Router {
       res.status(500).json({
         success: false,
         error: 'Failed to get TP/SL config',
-        message: error instanceof Error ? error.message : 'Unknown error',
-        timestamp: Date.now()
-      });
-    }
-  });
-
-  /**
-   * Get all TP/SL configs
-   * GET /api/tpsl/all
-   */
-  router.get('/all', (req: Request, res: Response) => {
-    try {
-      const configs = tpslMonitor.getAllTPSL();
-
-      // Convert BigInt to string for JSON response
-      const responseConfigs = configs.map(config => ({
-        ...config,
-        entryPrice: config.entryPrice.toString(),
-        takeProfit: config.takeProfit?.toString(),
-        stopLoss: config.stopLoss?.toString()
-      }));
-
-      res.json({
-        success: true,
-        data: responseConfigs,
-        count: responseConfigs.length,
-        timestamp: Date.now()
-      });
-
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: 'Failed to get TP/SL configs',
         message: error instanceof Error ? error.message : 'Unknown error',
         timestamp: Date.now()
       });

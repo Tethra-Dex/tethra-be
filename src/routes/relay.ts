@@ -155,7 +155,8 @@ export function createRelayRoute(relayService: RelayService): Router {
           gasUsed: result.gasUsed.toString(),
           usdcCharged: result.usdcCharged.toString(),
           usdcChargedFormatted: (Number(result.usdcCharged) / 1e6).toFixed(4) + ' USDC',
-          explorerUrl: `https://sepolia.basescan.org/tx/${result.txHash}`
+          explorerUrl: `https://sepolia.basescan.org/tx/${result.txHash}`,
+          positionId: result.positionId // Position ID if extracted from event
         },
         timestamp: Date.now()
       });
@@ -310,84 +311,6 @@ export function createRelayRoute(relayService: RelayService): Router {
       res.status(500).json({
         success: false,
         error: 'Failed to close position',
-        message: error instanceof Error ? error.message : 'Unknown error',
-        timestamp: Date.now()
-      });
-    }
-  });
-
-  /**
-   * Estimate recommended execution fee for limit orders
-   * GET /api/relay/limit/execution-fee?orderType=limit_open&estimatedGas=550000&bufferBps=2000
-   */
-  router.get('/limit/execution-fee', async (req: Request, res: Response) => {
-    try {
-      const orderTypeParam = typeof req.query.orderType === 'string' ? req.query.orderType : undefined;
-      const estimatedGasParam = typeof req.query.estimatedGas === 'string' ? req.query.estimatedGas : undefined;
-      const bufferBpsParam = typeof req.query.bufferBps === 'string' ? req.query.bufferBps : undefined;
-
-      let gasOverride: bigint | undefined;
-      if (estimatedGasParam && estimatedGasParam.trim().length > 0) {
-        try {
-          gasOverride = BigInt(estimatedGasParam);
-        } catch {
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid estimatedGas value',
-            timestamp: Date.now()
-          });
-        }
-      }
-
-      let bufferBps: number | undefined;
-      if (bufferBpsParam && bufferBpsParam.trim().length > 0) {
-        const parsed = Number(bufferBpsParam);
-        if (!Number.isFinite(parsed)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid bufferBps value',
-            timestamp: Date.now()
-          });
-        }
-        bufferBps = parsed;
-      }
-
-      const estimate = await relayService.estimateLimitExecutionFee({
-        orderType: orderTypeParam,
-        gasOverride,
-        bufferBps
-      });
-
-      // HOTFIX: If paymaster returns 0, use fixed fallback
-      let finalBaseCost = estimate.baseCost;
-      let finalBufferedCost = estimate.bufferedCost;
-      
-      if (finalBaseCost === 0n) {
-        // Fixed fallback: ~0.5 USDC for limit orders
-        finalBaseCost = 500000n; // 0.5 USDC (6 decimals)
-        finalBufferedCost = finalBaseCost + (finalBaseCost * BigInt(estimate.bufferBps)) / 10000n;
-        logger.warn('⚠️  Using fixed fallback execution fee: 0.5 USDC base');
-      }
-
-      res.json({
-        success: true,
-        data: {
-          orderType: estimate.orderType,
-          gasEstimate: estimate.gasEstimate.toString(),
-          baseCost: finalBaseCost.toString(),
-          baseCostFormatted: (Number(finalBaseCost) / 1e6).toFixed(4),
-          bufferBps: estimate.bufferBps,
-          recommendedMaxExecutionFee: finalBufferedCost.toString(),
-          recommendedFormatted: (Number(finalBufferedCost) / 1e6).toFixed(4)
-        },
-        timestamp: Date.now()
-      });
-
-    } catch (error) {
-      logger.error('Error estimating limit execution fee:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to estimate execution fee',
         message: error instanceof Error ? error.message : 'Unknown error',
         timestamp: Date.now()
       });

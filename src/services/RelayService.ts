@@ -8,15 +8,6 @@
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
 
-const LIMIT_ORDER_GAS_ESTIMATES: Readonly<Record<string, bigint>> = Object.freeze({
-  limit_open: 550000n,
-  limit_close: 420000n,
-  stop_loss: 450000n,
-});
-
-const DEFAULT_LIMIT_EXECUTION_BUFFER_BPS = 2000; // 20% safety buffer on top of gas cost
-const MAX_EXECUTION_BUFFER_BPS = 5000; // Cap buffer at 50% to avoid absurd slippage
-
 export class RelayService {
   private logger: Logger;
   private provider: ethers.JsonRpcProvider;
@@ -134,46 +125,6 @@ export class RelayService {
   }
   
   /**
-   * Estimate execution fee for limit orders with buffer
-   */
-  async estimateLimitExecutionFee(options: {
-    orderType?: string;
-    gasOverride?: bigint;
-    bufferBps?: number;
-  } = {}): Promise<{
-    orderType: string;
-    gasEstimate: bigint;
-    baseCost: bigint;
-    bufferedCost: bigint;
-    bufferBps: number;
-  }> {
-    const orderType = (options.orderType || 'limit_open').toLowerCase();
-    const defaultGas =
-      LIMIT_ORDER_GAS_ESTIMATES[orderType] ?? LIMIT_ORDER_GAS_ESTIMATES['limit_open'];
-
-    const gasEstimate =
-      options.gasOverride && options.gasOverride > 0n ? options.gasOverride : defaultGas;
-
-    const baseCost = await this.calculateGasCost(gasEstimate);
-
-    const rawBuffer = options.bufferBps;
-    const bufferBps =
-      rawBuffer !== undefined
-        ? Math.min(Math.max(Math.trunc(rawBuffer), 0), MAX_EXECUTION_BUFFER_BPS)
-        : DEFAULT_LIMIT_EXECUTION_BUFFER_BPS;
-
-    const bufferedCost = baseCost + (baseCost * BigInt(bufferBps)) / 10000n;
-
-    return {
-      orderType,
-      gasEstimate,
-      baseCost,
-      bufferedCost,
-      bufferBps,
-    };
-  }
-  
-  /**
    * Relay a transaction (pay gas with backend wallet, charge user USDC)
    * NOTE: For meta-transactions, data should already be encoded with user signature
    */
@@ -182,7 +133,7 @@ export class RelayService {
     data: string,
     userAddress: string,
     value: bigint = 0n
-  ): Promise<{ txHash: string; gasUsed: bigint; usdcCharged: bigint }> {
+  ): Promise<{ txHash: string; gasUsed: bigint; usdcCharged: bigint; positionId?: number }> {
     try {
       this.logger.info(`🔄 Relaying meta-transaction for ${userAddress}`);
       this.logger.info(`   Relayer: ${this.relayWallet.address}`);
@@ -228,6 +179,38 @@ export class RelayService {
       this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
       this.logger.info(`   Gas price: ${receipt.gasPrice?.toString() || 'N/A'}`);
       
+      // Try to extract positionId from PositionOpened event
+      let positionId: number | undefined;
+      try {
+        // PositionOpened event signature - positionId and trader are indexed
+        const positionOpenedTopic = ethers.id('PositionOpened(uint256,address,string,bool,uint256,uint256,uint256,uint256)');
+        this.logger.info(`🔍 Looking for PositionOpened event...`);
+        this.logger.info(`   Expected topic: ${positionOpenedTopic}`);
+        this.logger.info(`   Total logs: ${receipt.logs.length}`);
+        
+        for (const log of receipt.logs) {
+          this.logger.info(`   Log from: ${log.address}, topic[0]: ${log.topics[0]}`);
+          // Check if log is from PositionManager contract
+          if (log.address.toLowerCase() === this.POSITION_MANAGER_ADDRESS.toLowerCase() && 
+              log.topics[0] === positionOpenedTopic) {
+            if (log.topics.length > 1) {
+              // Parse position ID from indexed parameter (topic[1])
+              positionId = parseInt(log.topics[1], 16);
+              this.logger.info(`🎯 Extracted position ID from event: ${positionId}`);
+              break;
+            } else {
+              this.logger.warn('⚠️ Found PositionOpened event but no indexed positionId');
+            }
+          }
+        }
+        
+        if (!positionId) {
+          this.logger.warn('⚠️ No PositionOpened event found in receipt');
+        }
+      } catch (err) {
+        this.logger.warn('⚠️ Could not extract position ID from receipt:', err);
+      }
+      
       // Charge user USDC via paymaster
       // TODO: Implement full paymaster integration with proper nonce management
       // For now, skip charging to avoid nonce collision
@@ -249,7 +232,8 @@ export class RelayService {
       return {
         txHash: receipt.hash,
         gasUsed,
-        usdcCharged: usdcCost
+        usdcCharged: usdcCost,
+        positionId
       };
       
     } catch (error) {

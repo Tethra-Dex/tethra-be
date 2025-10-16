@@ -18,6 +18,8 @@ export function createLimitOrderRoute(limitOrderService: LimitOrderService) {
       nonce,
       expiresAt,
       signature,
+      takeProfit,
+      stopLoss,
       metadata,
     } = req.body ?? {};
 
@@ -81,6 +83,8 @@ export function createLimitOrderRoute(limitOrderService: LimitOrderService) {
       nonce: String(nonce),
       expiresAt: String(expiresAt),
       signature,
+      takeProfit: takeProfit ? String(takeProfit) : undefined,
+      stopLoss: stopLoss ? String(stopLoss) : undefined,
       metadata,
     };
 

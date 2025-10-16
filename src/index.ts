@@ -56,9 +56,21 @@ async function main() {
     // Wait for Pyth price service to initialize
     await priceService.initialize();
 
+    // Initialize TP/SL Monitor first (needed by LimitOrderExecutor)
+    logger.info('🎯 Initializing TP/SL Monitor...');
+    const tpslMonitor = new TPSLMonitor(priceService);
+    tpslMonitor.start();
+    tpslMonitorRef = tpslMonitor; // Store reference for graceful shutdown
+    logger.success('✅ TP/SL Monitor started! Ready to execute TP/SL orders...');
+
     // Initialize Limit Order Executor (monitors and auto-executes orders)
     logger.info('🤖 Initializing Limit Order Executor...');
-    const limitOrderExecutor = new LimitOrderExecutor(priceService, gridTradingService);
+    const limitOrderExecutor = new LimitOrderExecutor(
+      priceService,
+      gridTradingService,
+      tpslMonitor,
+      limitOrderService
+    );
     limitOrderExecutor.start();
     limitOrderExecutorRef = limitOrderExecutor; // Store reference for graceful shutdown
     logger.success('✅ Limit Order Executor started! Monitoring for orders...');
@@ -76,13 +88,6 @@ async function main() {
     positionMonitor.start();
     positionMonitorRef = positionMonitor; // Store reference for graceful shutdown
     logger.success('✅ Position Monitor started! Monitoring for liquidations...');
-    
-    // Initialize TP/SL Monitor (Take Profit / Stop Loss)
-    logger.info('🎯 Initializing TP/SL Monitor...');
-    const tpslMonitor = new TPSLMonitor(priceService);
-    tpslMonitor.start();
-    tpslMonitorRef = tpslMonitor; // Store reference for graceful shutdown
-    logger.success('✅ TP/SL Monitor started! Ready to execute TP/SL orders...');
     
     // Check Price Signer status
     if (signerService.isInitialized()) {
@@ -195,7 +200,7 @@ async function main() {
     app.use('/api/price', createPriceRoute(priceService, signerService));
     app.use('/api/relay', createRelayRoute(relayService));
     app.use('/api/limit-orders', createLimitOrderRoute(limitOrderService));
-    app.use('/api/grid', createGridTradingRoute(gridTradingService, limitOrderService));
+    app.use('/api/grid', createGridTradingRoute(gridTradingService));
     app.use('/api/tpsl', createTPSLRoute(tpslMonitor));
     app.use('/api/tap-to-trade', createTapToTradeRoute(tapToTradeService));
     

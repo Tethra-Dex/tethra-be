@@ -39,11 +39,21 @@ export class LimitOrderExecutor {
   private checkInterval: number = 5000; // Check every 5 seconds
   private currentPrices: Map<string, { price: bigint; timestamp: number }> = new Map();
   private gridService?: GridTradingService; // Optional grid trading service
+  private tpslMonitor?: any; // TPSLMonitor for auto-setting TP/SL
+  private limitOrderService?: any; // LimitOrderService for retrieving TP/SL data
   private lastCleanupTime: number = 0;
   private cleanupInterval: number = 30000; // Cleanup expired cells every 30 seconds
+  private tradingPairAddress: string;
 
-  constructor(pythPriceService: any, gridService?: GridTradingService) {
+  constructor(
+    pythPriceService: any,
+    gridService?: GridTradingService,
+    tpslMonitor?: any,
+    limitOrderService?: any
+  ) {
     this.gridService = gridService;
+    this.tpslMonitor = tpslMonitor;
+    this.limitOrderService = limitOrderService;
     this.logger = new Logger('LimitOrderExecutor');
 
     // Initialize provider
@@ -76,6 +86,12 @@ export class LimitOrderExecutor {
       LimitExecutorABI.abi,
       this.keeperWallet
     );
+
+    // PositionManager address for querying position IDs
+    this.tradingPairAddress = process.env.POSITION_MANAGER_ADDRESS || '';
+    if (!this.tradingPairAddress) {
+      throw new Error('POSITION_MANAGER_ADDRESS not configured');
+    }
 
     // Subscribe to Pyth price updates
     if (pythPriceService) {
@@ -385,6 +401,39 @@ export class LimitOrderExecutor {
       this.logger.info(`   TX: ${receipt.hash}`);
       this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
 
+      // Auto-set TP/SL if configured for this order (LIMIT_OPEN only)
+      if (order.orderType === 0n && this.tpslMonitor && this.limitOrderService) {
+        try {
+          // Extract position ID from PositionOpened event (same as RelayService)
+          let positionId: number | undefined;
+          const positionOpenedTopic = ethers.id('PositionOpened(uint256,address,string,bool,uint256,uint256,uint256,uint256)');
+          
+          for (const log of receipt.logs) {
+            // Check if log is from PositionManager contract
+            if (log.address.toLowerCase() === this.tradingPairAddress.toLowerCase() && 
+                log.topics[0] === positionOpenedTopic) {
+              if (log.topics.length > 1) {
+                // Parse position ID from indexed parameter (topic[1])
+                positionId = parseInt(log.topics[1], 16);
+                this.logger.info(`🎯 Extracted position ID from event: ${positionId}`);
+                break;
+              }
+            }
+          }
+
+          if (positionId) {
+            // Wait for blockchain to finalize the position data
+            this.logger.info('⏳ Waiting for blockchain to finalize position data...');
+            await this.sleep(2000); // Wait 2 seconds
+            await this.autoSetTPSLDirect(orderId, positionId, order.trader);
+          } else {
+            this.logger.warn(`⚠️ Could not extract position ID from receipt for order ${orderId}`);
+          }
+        } catch (tpslError) {
+          this.logger.error(`Failed to auto-set TP/SL for order ${orderId}:`, tpslError);
+        }
+      }
+
     } catch (error: any) {
       this.logger.error(`❌ Failed to execute order ${orderId}:`, error.message);
       
@@ -484,6 +533,45 @@ export class LimitOrderExecutor {
    */
   private formatUsdc(amount: bigint): string {
     return (Number(amount) / 1000000).toFixed(2) + ' USDC';
+  }
+
+  /**
+   * Auto-set TP/SL directly with position ID (extracted from event)
+   */
+  private async autoSetTPSLDirect(orderId: number, positionId: number, traderAddress: string) {
+    try {
+      // Check if this order has TP/SL preferences
+      const tpslData = this.limitOrderService.getOrderTPSL(orderId.toString());
+      if (!tpslData || (!tpslData.takeProfit && !tpslData.stopLoss)) {
+        this.logger.debug(`No TP/SL configured for order ${orderId}`);
+        return;
+      }
+
+      this.logger.info(`🎯 Auto-setting TP/SL for position ${positionId}...`);
+
+      // Set TP/SL via TPSLMonitor (match function signature)
+      await this.tpslMonitor.setTPSL(
+        positionId,
+        traderAddress,
+        tpslData.takeProfit,
+        tpslData.stopLoss
+      );
+
+      this.logger.success(`✅ Auto-set TP/SL for position ${positionId}!`);
+      if (tpslData.takeProfit) {
+        this.logger.info(`   TP: ${this.formatPrice(tpslData.takeProfit)}`);
+      }
+      if (tpslData.stopLoss) {
+        this.logger.info(`   SL: ${this.formatPrice(tpslData.stopLoss)}`);
+      }
+
+      // Clear stored TP/SL data after setting
+      this.limitOrderService.clearOrderTPSL(orderId.toString());
+
+    } catch (error) {
+      this.logger.error('Error in autoSetTPSLDirect:', error);
+      throw error;
+    }
   }
 
   /**
