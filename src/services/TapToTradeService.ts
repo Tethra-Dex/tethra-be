@@ -166,7 +166,7 @@ export class TapToTradeService {
       throw new Error('Not authorized to cancel this order');
     }
 
-    if (order.status !== TapToTradeOrderStatus.PENDING) {
+    if (order.status !== TapToTradeOrderStatus.PENDING && order.status !== TapToTradeOrderStatus.NEEDS_RESIGN) {
       throw new Error(`Cannot cancel order with status: ${order.status}`);
     }
 
@@ -279,6 +279,49 @@ export class TapToTradeService {
     this.orders.set(orderId, order);
 
     this.logger.error(`❌ Order ${orderId} failed: ${errorMessage}`);
+  }
+
+  /**
+   * Mark order as needs re-sign (nonce mismatch)
+   */
+  markAsNeedsResign(orderId: string, errorMessage: string): void {
+    const order = this.orders.get(orderId);
+    if (!order) {
+      throw new Error(`Order not found: ${orderId}`);
+    }
+
+    order.status = TapToTradeOrderStatus.NEEDS_RESIGN;
+    order.errorMessage = errorMessage;
+    this.orders.set(orderId, order);
+
+    this.logger.warn(`\u270d\ufe0f Order ${orderId} needs re-signature: ${errorMessage}`);
+  }
+
+  /**
+   * Update signature for an order (after re-sign)
+   */
+  updateSignature(orderId: string, nonce: string, signature: string, trader: string): void {
+    const order = this.orders.get(orderId);
+    if (!order) {
+      throw new Error(`Order not found: ${orderId}`);
+    }
+
+    const normalizedTrader = trader.toLowerCase();
+    if (order.trader !== normalizedTrader) {
+      throw new Error('Not authorized to update this order');
+    }
+
+    if (order.status !== TapToTradeOrderStatus.NEEDS_RESIGN) {
+      throw new Error(`Order is not in NEEDS_RESIGN status: ${order.status}`);
+    }
+
+    order.nonce = nonce;
+    order.signature = signature;
+    order.status = TapToTradeOrderStatus.PENDING;
+    order.errorMessage = undefined;
+    this.orders.set(orderId, order);
+
+    this.logger.info(`\u2705 Updated signature for order ${orderId} with new nonce ${nonce}`);
   }
 
   /**

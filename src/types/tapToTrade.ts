@@ -8,6 +8,7 @@
 
 export enum TapToTradeOrderStatus {
   PENDING = 'PENDING',       // Waiting for price & time conditions
+  NEEDS_RESIGN = 'NEEDS_RESIGN', // Nonce mismatch - needs re-signature from user
   EXECUTING = 'EXECUTING',   // Currently being executed on-chain
   EXECUTED = 'EXECUTED',     // Successfully executed and position opened
   CANCELLED = 'CANCELLED',   // Cancelled by user (no on-chain tx)

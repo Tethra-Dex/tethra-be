@@ -255,6 +255,47 @@ export class TapToTradeExecutor {
         nonce: order.nonce,
         price: this.formatPrice(signedPrice.price),
       });
+      
+      // Log user signature for debugging
+      this.logger.info('User signature details:', {
+        signature: order.signature,
+        signatureLength: order.signature.length,
+        contractAddress: this.marketExecutorAddress,
+      });
+      
+      // CHECK: Validate nonce before execution
+      const currentNonceOnChain = await this.marketExecutor.metaNonces(order.trader);
+      this.logger.info('Nonce validation:', {
+        orderNonce: order.nonce,
+        currentNonceOnChain: currentNonceOnChain.toString(),
+        match: order.nonce === currentNonceOnChain.toString(),
+      });
+      
+      if (order.nonce !== currentNonceOnChain.toString()) {
+        this.logger.warn('\u274c Nonce mismatch! Order signature is stale.');
+        this.logger.warn(`   Order was signed with nonce ${order.nonce}, but contract nonce is now ${currentNonceOnChain.toString()}`);
+        this.logger.warn('   This usually happens when another order was executed after this order was created.');
+        this.logger.warn('   Marking order as NEEDS_RESIGN. Frontend will request user to re-sign...');
+        
+        // Mark as needs re-sign - frontend will prompt user to re-sign
+        this.tapToTradeService.markAsNeedsResign(order.id, `Nonce mismatch: order nonce=${order.nonce}, contract nonce=${currentNonceOnChain.toString()}. Re-signature required.`);
+        return; // Skip execution, wait for re-sign
+      }
+      
+      // Verify signature was created with correct parameters
+      const expectedMessageHash = ethers.solidityPackedKeccak256(
+        ['address', 'string', 'bool', 'uint256', 'uint256', 'uint256', 'address'],
+        [
+          order.trader,
+          order.symbol,
+          order.isLong,
+          BigInt(order.collateral),
+          BigInt(order.leverage),
+          BigInt(order.nonce),
+          this.marketExecutorAddress
+        ]
+      );
+      this.logger.info('Expected message hash for signature:', expectedMessageHash);
 
       const tx = await this.marketExecutor.openMarketPositionMeta(
         order.trader,

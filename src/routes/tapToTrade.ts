@@ -291,6 +291,36 @@ export function createTapToTradeRoute(tapToTradeService: TapToTradeService): Rou
   });
 
   /**
+   * POST /api/tap-to-trade/update-signature
+   * Update signature for an order that needs re-signing
+   */
+  router.post('/update-signature', (req: Request, res: Response) => {
+    try {
+      const { orderId, nonce, signature, trader } = req.body;
+
+      if (!orderId || !nonce || !signature || !trader) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: orderId, nonce, signature, trader',
+        });
+      }
+
+      tapToTradeService.updateSignature(orderId, nonce, signature, trader);
+
+      res.json({
+        success: true,
+        message: 'Order signature updated successfully',
+      });
+    } catch (error: any) {
+      logger.error('Error updating signature:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to update signature',
+      });
+    }
+  });
+
+  /**
    * GET /api/tap-to-trade/stats
    * Get tap-to-trade statistics
    */
