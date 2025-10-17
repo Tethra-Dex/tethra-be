@@ -245,6 +245,17 @@ export class TapToTradeExecutor {
 
       // Execute market order via MarketExecutor.openMarketPositionMeta()
       // This uses the user's signature to approve the trade
+      // Log execution parameters for debugging
+      this.logger.info('Execution parameters:', {
+        trader: order.trader,
+        symbol: order.symbol,
+        isLong: order.isLong,
+        collateral: order.collateral,
+        leverage: order.leverage,
+        nonce: order.nonce,
+        price: this.formatPrice(signedPrice.price),
+      });
+
       const tx = await this.marketExecutor.openMarketPositionMeta(
         order.trader,
         order.symbol,
@@ -311,11 +322,19 @@ export class TapToTradeExecutor {
       if (errorText.includes('USDC transfer failed') || errorText.includes('ERC20: insufficient allowance')) {
         this.logger.warn('💰 User needs to approve USDC or has insufficient balance');
       } else if (errorText.includes('Invalid signature') || errorText.includes('Invalid user signature')) {
-        this.logger.warn('🔏 Invalid user signature');
+        this.logger.warn('🔏 Invalid user signature - possibly wrong nonce or signature mismatch');
+        this.logger.warn(`   Expected nonce: ${order.nonce}`);
+        this.logger.warn(`   Trader address: ${order.trader}`);
       } else if (errorText.includes('Trade validation failed')) {
         this.logger.warn('⚠️  RiskManager rejected the trade - check leverage/collateral limits');
       } else if (errorText.includes('Price in future')) {
         this.logger.warn('⏱️  Price timestamp is in the future (clock drift)');
+      } else if (errorText.includes('execution reverted') && !error.reason) {
+        this.logger.warn('❓ Transaction reverted with no reason - common causes:');
+        this.logger.warn('   1. Nonce mismatch (user signature used wrong nonce)');
+        this.logger.warn('   2. Insufficient USDC balance or allowance');
+        this.logger.warn('   3. Invalid signature format');
+        this.logger.warn('   4. RiskManager validation failed');
       }
     }
   }
