@@ -6,6 +6,7 @@ import {
   GetTapToTradeOrdersQuery,
   TapToTradeOrderStats,
 } from '../types/tapToTrade';
+import { SessionKeyValidator } from './SessionKeyValidator';
 
 /**
  * TapToTradeService - Backend-Only Order Storage
@@ -22,6 +23,7 @@ import {
  */
 export class TapToTradeService {
   private readonly logger = new Logger('TapToTradeService');
+  private readonly sessionValidator: SessionKeyValidator;
 
   // In-memory storage
   private orders: Map<string, TapToTradeOrder> = new Map();
@@ -30,6 +32,7 @@ export class TapToTradeService {
   private ordersByCell: Map<string, string[]> = new Map(); // cellId => orderIds[]
 
   constructor() {
+    this.sessionValidator = new SessionKeyValidator();
     this.logger.info('🎯 TapToTradeService initialized (in-memory storage)');
     this.logger.warn('⚠️  Data will be lost on server restart');
   }
@@ -38,6 +41,50 @@ export class TapToTradeService {
    * Create a new tap-to-trade order (backend-only)
    */
   createOrder(params: CreateTapToTradeOrderRequest): TapToTradeOrder {
+    // Validate signature before creating order
+    const marketExecutor = process.env.MARKET_EXECUTOR_ADDRESS || '0x6D91332E27a5BddCe9486ad4e9cA3C319947a302';
+
+    if (params.sessionKey) {
+      // Validate with session key
+      const validation = this.sessionValidator.validateOrderWithSession({
+        trader: params.trader,
+        symbol: params.symbol,
+        isLong: params.isLong,
+        collateral: params.collateral,
+        leverage: params.leverage,
+        nonce: params.nonce,
+        signature: params.signature,
+        marketExecutor,
+        sessionKey: params.sessionKey,
+      });
+
+      if (!validation.valid) {
+        this.logger.error('❌ Session validation failed:', validation.error);
+        throw new Error(`Invalid session signature: ${validation.error}`);
+      }
+
+      this.logger.info('✅ Order validated with session key');
+    } else {
+      // Validate traditional signature (backward compatibility)
+      const validation = this.sessionValidator.validateOrderWithoutSession({
+        trader: params.trader,
+        symbol: params.symbol,
+        isLong: params.isLong,
+        collateral: params.collateral,
+        leverage: params.leverage,
+        nonce: params.nonce,
+        signature: params.signature,
+        marketExecutor,
+      });
+
+      if (!validation.valid) {
+        this.logger.error('❌ Signature validation failed:', validation.error);
+        throw new Error(`Invalid signature: ${validation.error}`);
+      }
+
+      this.logger.info('✅ Order validated with traditional signature');
+    }
+
     const id = this.generateId('ttt');
     const order: TapToTradeOrder = {
       id,
@@ -53,6 +100,7 @@ export class TapToTradeService {
       endTime: params.endTime,
       nonce: params.nonce,
       signature: params.signature,
+      sessionKey: params.sessionKey,
       status: TapToTradeOrderStatus.PENDING,
       createdAt: Date.now(),
     };

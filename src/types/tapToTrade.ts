@@ -35,7 +35,15 @@ export interface TapToTradeOrder {
 
   // Signature for execution
   nonce: string;                       // Nonce for signature validation
-  signature: string;                   // User's signature for market execution
+  signature: string;                   // User's signature OR session key signature for market execution
+
+  // Session key (optional - for signature-less trading)
+  sessionKey?: {
+    address: string;                   // Session key address
+    expiresAt: number;                 // Unix timestamp - session expires at
+    authorizedBy: string;              // User address who authorized this session
+    authSignature: string;             // User's signature authorizing the session key
+  };
 
   // Status tracking
   status: TapToTradeOrderStatus;
@@ -64,6 +72,12 @@ export interface CreateTapToTradeOrderRequest {
   endTime: number;
   nonce: string;
   signature: string;
+  sessionKey?: {
+    address: string;
+    expiresAt: number;
+    authorizedBy: string;
+    authSignature: string;
+  };
 }
 
 export interface BatchCreateTapToTradeOrdersRequest {
