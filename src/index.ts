@@ -13,12 +13,15 @@ import { GridTradingService } from './services/GridTradingService';
 import { TPSLMonitor } from './services/TPSLMonitor';
 import { TapToTradeService } from './services/TapToTradeService';
 import { TapToTradeExecutor } from './services/TapToTradeExecutor';
+import { OneTapProfitService } from './services/OneTapProfitService';
+import { OneTapProfitMonitor } from './services/OneTapProfitMonitor';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
 import { createGridTradingRoute } from './routes/gridTrading';
 import { createTPSLRoute } from './routes/tpsl';
 import { createTapToTradeRoute } from './routes/tapToTrade';
+import { createOneTapProfitRoute } from './routes/oneTapProfit';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -52,6 +55,7 @@ async function main() {
     const limitOrderService = new LimitOrderService(); // Keeper interactions for limit orders
     const gridTradingService = new GridTradingService(); // Grid trading in-memory storage
     const tapToTradeService = new TapToTradeService(); // Tap-to-trade backend-only orders
+    const oneTapProfitService = new OneTapProfitService(); // One Tap Profit betting system
 
     // Wait for Pyth price service to initialize
     await priceService.initialize();
@@ -81,6 +85,13 @@ async function main() {
     tapToTradeExecutor.start();
     tapToTradeExecutorRef = tapToTradeExecutor; // Store reference for graceful shutdown
     logger.success('✅ Tap-to-Trade Executor started! Monitoring for tap-to-trade orders...');
+
+      // Initialize One Tap Profit Monitor (monitors and settles bets automatically)
+      logger.info('🎰 Initializing One Tap Profit Monitor...');
+      const oneTapProfitMonitor = new OneTapProfitMonitor(priceService, oneTapProfitService);
+      oneTapProfitMonitor.start();
+      oneTapProfitMonitorRef = oneTapProfitMonitor; // Store reference for graceful shutdown
+      logger.success('✅ One Tap Profit Monitor started! Monitoring for bets...');
 
     // Initialize Position Monitor (auto-liquidation for isolated margin)
     logger.info('🔍 Initializing Position Monitor (Auto-Liquidation)...');
@@ -180,6 +191,12 @@ async function main() {
           tapTotradePending: '/api/tap-to-trade/pending',
           tapTotradeCancelOrder: '/api/tap-to-trade/cancel-order',
           tapToTradeStats: '/api/tap-to-trade/stats',
+          oneTapPlaceBet: '/api/one-tap/place-bet',
+          oneTapBets: '/api/one-tap/bets',
+          oneTapActive: '/api/one-tap/active',
+          oneTapCalculateMultiplier: '/api/one-tap/calculate-multiplier',
+          oneTapStats: '/api/one-tap/stats',
+          oneTapStatus: '/api/one-tap/status',
           health: '/health'
         },
         timestamp: Date.now()
@@ -203,6 +220,7 @@ async function main() {
     app.use('/api/grid', createGridTradingRoute(gridTradingService));
     app.use('/api/tpsl', createTPSLRoute(tpslMonitor));
     app.use('/api/tap-to-trade', createTapToTradeRoute(tapToTradeService));
+    app.use('/api/one-tap', createOneTapProfitRoute(oneTapProfitService, oneTapProfitMonitor));
     
     // Global error handler
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
@@ -243,6 +261,7 @@ let limitOrderExecutorRef: any = null;
 let positionMonitorRef: any = null;
 let tpslMonitorRef: any = null;
 let tapToTradeExecutorRef: any = null;
+let oneTapProfitMonitorRef: any = null;
 
 process.on('SIGINT', () => {
   logger.info('Received SIGINT, shutting down gracefully...');
@@ -257,6 +276,9 @@ process.on('SIGINT', () => {
   }
   if (tapToTradeExecutorRef) {
     tapToTradeExecutorRef.stop();
+  }
+  if (oneTapProfitMonitorRef) {
+    oneTapProfitMonitorRef.stop();
   }
   process.exit(0);
 });
@@ -274,6 +296,9 @@ process.on('SIGTERM', () => {
   }
   if (tapToTradeExecutorRef) {
     tapToTradeExecutorRef.stop();
+  }
+  if (oneTapProfitMonitorRef) {
+    oneTapProfitMonitorRef.stop();
   }
   process.exit(0);
 });
