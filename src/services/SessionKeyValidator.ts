@@ -70,17 +70,33 @@ export class SessionKeyValidator {
       }
 
       // 4. Verify order signature was created by session key
+      this.logger.info('🔍 Computing message hash with parameters:', {
+        trader,
+        symbol,
+        isLong,
+        collateral,
+        leverage,
+        nonce,
+        marketExecutor,
+      });
+
       const messageHash = ethers.solidityPackedKeccak256(
         ['address', 'string', 'bool', 'uint256', 'uint256', 'uint256', 'address'],
         [trader, symbol, isLong, collateral, leverage, nonce, marketExecutor]
       );
 
+      this.logger.info('📝 Message hash computed:', messageHash);
+      this.logger.info('✍️ Signature to verify:', signature);
+
+      // IMPORTANT: Recover the signer from the signature
+      // The signature should be from the session key, and the messageHash contains the trader address
       const recoveredSigner = ethers.verifyMessage(ethers.getBytes(messageHash), signature);
 
       if (recoveredSigner.toLowerCase() !== sessionKey.address.toLowerCase()) {
         this.logger.error('Order signature not from session key', {
           expected: sessionKey.address,
           recovered: recoveredSigner,
+          messageHash,
         });
         return { valid: false, error: 'Order signature not from session key' };
       }
@@ -121,12 +137,17 @@ export class SessionKeyValidator {
         [trader, symbol, isLong, collateral, leverage, nonce, marketExecutor]
       );
 
-      const recoveredSigner = ethers.verifyMessage(ethers.getBytes(messageHash), signature);
+      // IMPORTANT: Use hashMessage to add Ethereum signed message prefix, then recover
+      // This matches how personal_sign works in wallets
+      const digest = ethers.hashMessage(ethers.getBytes(messageHash));
+      const recoveredSigner = ethers.recoverAddress(digest, signature);
 
       if (recoveredSigner.toLowerCase() !== trader.toLowerCase()) {
         this.logger.error('Order signature invalid', {
           expected: trader,
           recovered: recoveredSigner,
+          messageHash,
+          digest,
         });
         return { valid: false, error: 'Invalid order signature' };
       }

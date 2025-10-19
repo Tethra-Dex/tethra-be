@@ -42,7 +42,7 @@ export class TapToTradeService {
    */
   createOrder(params: CreateTapToTradeOrderRequest): TapToTradeOrder {
     // Validate signature before creating order
-    const marketExecutor = process.env.MARKET_EXECUTOR_ADDRESS || '0x6D91332E27a5BddCe9486ad4e9cA3C319947a302';
+    const marketExecutor = process.env.TAP_TO_TRADE_EXECUTOR_ADDRESS || '0x841f70066ba831650c4D97BD59cc001c890cf6b6';
 
     if (params.sessionKey) {
       // Validate with session key

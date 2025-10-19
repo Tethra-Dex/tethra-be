@@ -10,7 +10,7 @@
 
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
-import MarketExecutorABI from '../../../tethra-sc/out/MarketExecutor.sol/MarketExecutor.json';
+import TapToTradeExecutorABI from '../abis/TapToTradeExecutor.json';
 import { TapToTradeService } from './TapToTradeService';
 import { TapToTradeOrder, TapToTradeOrderStatus } from '../types/tapToTrade';
 
@@ -18,8 +18,8 @@ export class TapToTradeExecutor {
   private logger: Logger;
   private provider: ethers.JsonRpcProvider;
   private keeperWallet: ethers.Wallet;
-  private marketExecutor: Contract;
-  private marketExecutorAddress: string;
+  private tapToTradeExecutor: Contract;
+  private tapToTradeExecutorAddress: string;
   private priceSignerWallet: ethers.Wallet;
   private priceSignerAddress: string;
   private tapToTradeService: TapToTradeService;
@@ -52,15 +52,15 @@ export class TapToTradeExecutor {
     this.priceSignerWallet = new ethers.Wallet(priceSignerKey);
     this.priceSignerAddress = this.priceSignerWallet.address;
 
-    // MarketExecutor contract
-    this.marketExecutorAddress = process.env.MARKET_EXECUTOR_ADDRESS || '';
-    if (!this.marketExecutorAddress) {
-      throw new Error('MARKET_EXECUTOR_ADDRESS not configured');
+    // TapToTradeExecutor contract
+    this.tapToTradeExecutorAddress = process.env.TAP_TO_TRADE_EXECUTOR_ADDRESS || '';
+    if (!this.tapToTradeExecutorAddress) {
+      throw new Error('TAP_TO_TRADE_EXECUTOR_ADDRESS not configured');
     }
 
-    this.marketExecutor = new Contract(
-      this.marketExecutorAddress,
-      MarketExecutorABI.abi,
+    this.tapToTradeExecutor = new Contract(
+      this.tapToTradeExecutorAddress,
+      TapToTradeExecutorABI.abi,
       this.keeperWallet
     );
 
@@ -92,7 +92,7 @@ export class TapToTradeExecutor {
     this.logger.info('🚀 Tap-to-Trade Executor initialized');
     this.logger.info(`   Keeper: ${this.keeperWallet.address}`);
     this.logger.info(`   Price Signer: ${this.priceSignerAddress}`);
-    this.logger.info(`   MarketExecutor: ${this.marketExecutorAddress}`);
+    this.logger.info(`   TapToTradeExecutor: ${this.tapToTradeExecutorAddress}`);
   }
 
   /**
@@ -243,8 +243,8 @@ export class TapToTradeExecutor {
         signature: signedPrice.signature.substring(0, 20) + '...',
       });
 
-      // Execute market order via MarketExecutor.openMarketPositionMeta()
-      // This uses the user's signature to approve the trade
+      // Execute tap-to-trade order via TapToTradeExecutor.executeTapToTrade()
+      // This supports both user signature AND session key signature
       // Log execution parameters for debugging
       this.logger.info('Execution parameters:', {
         trader: order.trader,
@@ -260,11 +260,11 @@ export class TapToTradeExecutor {
       this.logger.info('User signature details:', {
         signature: order.signature,
         signatureLength: order.signature.length,
-        contractAddress: this.marketExecutorAddress,
+        contractAddress: this.tapToTradeExecutorAddress,
       });
       
       // CHECK: Validate nonce before execution
-      const currentNonceOnChain = await this.marketExecutor.metaNonces(order.trader);
+      const currentNonceOnChain = await this.tapToTradeExecutor.metaNonces(order.trader);
       this.logger.info('Nonce validation:', {
         orderNonce: order.nonce,
         currentNonceOnChain: currentNonceOnChain.toString(),
@@ -292,12 +292,12 @@ export class TapToTradeExecutor {
           BigInt(order.collateral),
           BigInt(order.leverage),
           BigInt(order.nonce),
-          this.marketExecutorAddress
+          this.tapToTradeExecutorAddress
         ]
       );
       this.logger.info('Expected message hash for signature:', expectedMessageHash);
 
-      const tx = await this.marketExecutor.openMarketPositionMeta(
+      const tx = await this.tapToTradeExecutor.executeTapToTrade(
         order.trader,
         order.symbol,
         order.isLong,
@@ -316,7 +316,7 @@ export class TapToTradeExecutor {
       let positionId = '0';
       for (const log of receipt.logs) {
         try {
-          const parsed = this.marketExecutor.interface.parseLog({
+          const parsed = this.tapToTradeExecutor.interface.parseLog({
             topics: log.topics as string[],
             data: log.data,
           });
