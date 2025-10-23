@@ -22,6 +22,7 @@ import { createGridTradingRoute } from './routes/gridTrading';
 import { createTPSLRoute } from './routes/tpsl';
 import { createTapToTradeRoute } from './routes/tapToTrade';
 import { createOneTapProfitRoute } from './routes/oneTapProfit';
+import { createFaucetRoute } from './routes/faucet';
 import { Logger } from './utils/Logger';
 
 dotenv.config();
@@ -197,6 +198,8 @@ async function main() {
           oneTapCalculateMultiplier: '/api/one-tap/calculate-multiplier',
           oneTapStats: '/api/one-tap/stats',
           oneTapStatus: '/api/one-tap/status',
+          faucetClaim: '/api/faucet/claim',
+          faucetStatus: '/api/faucet/status',
           health: '/health'
         },
         timestamp: Date.now()
@@ -221,6 +224,7 @@ async function main() {
     app.use('/api/tpsl', createTPSLRoute(tpslMonitor));
     app.use('/api/tap-to-trade', createTapToTradeRoute(tapToTradeService));
     app.use('/api/one-tap', createOneTapProfitRoute(oneTapProfitService, oneTapProfitMonitor));
+    app.use('/api/faucet', createFaucetRoute());
     
     // Global error handler
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
