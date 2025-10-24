@@ -226,6 +226,10 @@ async function main() {
     app.use('/api/one-tap', createOneTapProfitRoute(oneTapProfitService, oneTapProfitMonitor));
     app.use('/api/faucet', createFaucetRoute());
     
+    // Session key authorization route (relayer pays gas!)
+    const sessionRoutes = require('./routes/sessionRoutes').default;
+    app.use('/api/session', sessionRoutes);
+    
     // Global error handler
     app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
       logger.error('Unhandled API error:', error);

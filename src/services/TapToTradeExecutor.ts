@@ -296,17 +296,75 @@ export class TapToTradeExecutor {
         ]
       );
       this.logger.info('Expected message hash for signature:', expectedMessageHash);
+      
+      // PRE-EXECUTION SIGNATURE VERIFICATION
+      // Verify signature locally before sending to chain to catch errors early
+      try {
+        const digest = ethers.hashMessage(ethers.getBytes(expectedMessageHash));
+        const recoveredSigner = ethers.recoverAddress(digest, order.signature);
+        
+        this.logger.info('🔍 Pre-execution signature verification:', {
+          messageHash: expectedMessageHash,
+          digest,
+          recoveredSigner,
+          expectedTrader: order.trader,
+          hasSessionKey: !!order.sessionKey,
+          sessionKeyAddress: order.sessionKey?.address,
+        });
+        
+        // Check if recovered signer matches trader OR session key
+        const isValidSigner = recoveredSigner.toLowerCase() === order.trader.toLowerCase() ||
+          (order.sessionKey && recoveredSigner.toLowerCase() === order.sessionKey.address.toLowerCase());
+        
+        if (!isValidSigner) {
+          const errorMsg = `Signature verification failed: recovered=${recoveredSigner}, expected=${order.trader}${order.sessionKey ? ` or session key ${order.sessionKey.address}` : ''}`;
+          this.logger.error('❌', errorMsg);
+          this.tapToTradeService.markAsFailed(order.id, errorMsg);
+          return;
+        }
+        
+        this.logger.info('✅ Pre-execution signature verification passed');
+      } catch (sigErr: any) {
+        this.logger.error('❌ Pre-execution signature verification error:', sigErr.message);
+        this.tapToTradeService.markAsFailed(order.id, `Signature verification error: ${sigErr.message}`);
+        return;
+      }
 
-      const tx = await this.tapToTradeExecutor.executeTapToTrade(
-        order.trader,
-        order.symbol,
-        order.isLong,
-        BigInt(order.collateral),
-        BigInt(order.leverage),
-        signedPrice,
-        order.signature,
-        { gasLimit: 800000 }
-      );
+      // Use different execution method based on whether order has session key
+      let tx;
+      
+      if (order.sessionKey) {
+        // Order signed with session key - use keeper-only execution (no signature verification on-chain)
+        this.logger.info('🔑 Order has session key - using keeper-only execution');
+        this.logger.info('⚡ Backend validated session signature off-chain, keeper executes without on-chain verification');
+        
+        // Call executeTapToTradeByKeeper - no signature parameter needed!
+        tx = await this.tapToTradeExecutor.executeTapToTradeByKeeper(
+          order.trader,
+          order.symbol,
+          order.isLong,
+          BigInt(order.collateral),
+          BigInt(order.leverage),
+          signedPrice,
+          { gasLimit: 800000 }
+        );
+        
+        this.logger.info('✅ Keeper execution successful (fully gasless for user!)');
+      } else {
+        // Traditional flow - user signature verified on-chain
+        this.logger.info('📝 Order has traditional signature - using meta-transaction flow');
+        
+        tx = await this.tapToTradeExecutor.executeTapToTrade(
+          order.trader,
+          order.symbol,
+          order.isLong,
+          BigInt(order.collateral),
+          BigInt(order.leverage),
+          signedPrice,
+          order.signature,
+          { gasLimit: 800000 }
+        );
+      }
 
       this.logger.info(`📤 Execution tx sent: ${tx.hash}`);
 

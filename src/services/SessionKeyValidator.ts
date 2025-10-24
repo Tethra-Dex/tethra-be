@@ -51,20 +51,33 @@ export class SessionKeyValidator {
       }
 
       // 3. Verify session authorization signature
+      // IMPORTANT: Must match smart contract abi.encodePacked format
+      // Smart contract: keccak256(abi.encodePacked("Authorize session key ", address, " for Tethra Tap-to-Trade until ", uint256))
       const expiresAtSeconds = Math.floor(sessionKey.expiresAt / 1000);
-      const authMessage = `Authorize session key ${sessionKey.address} for Tethra Tap-to-Trade until ${expiresAtSeconds}`;
-      const authMessageHash = ethers.keccak256(ethers.toUtf8Bytes(authMessage));
-
-      const recoveredAuthSigner = ethers.verifyMessage(
-        ethers.getBytes(authMessageHash),
-        sessionKey.authSignature
+      
+      // Use solidityPackedKeccak256 to match abi.encodePacked
+      const authMessageHash = ethers.solidityPackedKeccak256(
+        ['string', 'address', 'string', 'uint256'],
+        [
+          'Authorize session key ',
+          sessionKey.address,
+          ' for Tethra Tap-to-Trade until ',
+          expiresAtSeconds
+        ]
       );
+      
+      // Verify using hashMessage + recoverAddress (matches personal_sign behavior)
+      const authDigest = ethers.hashMessage(ethers.getBytes(authMessageHash));
+      const recoveredAuthSigner = ethers.recoverAddress(authDigest, sessionKey.authSignature);
 
       if (recoveredAuthSigner.toLowerCase() !== trader.toLowerCase()) {
         this.logger.error('Session auth signature invalid', {
           expected: trader,
           recovered: recoveredAuthSigner,
-          authMessage,
+          sessionKeyAddress: sessionKey.address,
+          expiresAtSeconds,
+          authMessageHash,
+          authDigest,
         });
         return { valid: false, error: 'Invalid session authorization signature' };
       }
@@ -88,15 +101,24 @@ export class SessionKeyValidator {
       this.logger.info('📝 Message hash computed:', messageHash);
       this.logger.info('✍️ Signature to verify:', signature);
 
-      // IMPORTANT: Recover the signer from the signature
-      // The signature should be from the session key, and the messageHash contains the trader address
-      const recoveredSigner = ethers.verifyMessage(ethers.getBytes(messageHash), signature);
+      // IMPORTANT: Verify using hashMessage + recoverAddress to match viem's behavior
+      // This is how the session key signs in frontend: hashMessage({ raw: messageHash })
+      const digest = ethers.hashMessage(ethers.getBytes(messageHash));
+      const recoveredSigner = ethers.recoverAddress(digest, signature);
+
+      this.logger.info('🔍 Signature verification details:', {
+        messageHash,
+        digest,
+        recoveredSigner,
+        expectedSessionKey: sessionKey.address,
+      });
 
       if (recoveredSigner.toLowerCase() !== sessionKey.address.toLowerCase()) {
         this.logger.error('Order signature not from session key', {
           expected: sessionKey.address,
           recovered: recoveredSigner,
           messageHash,
+          digest,
         });
         return { valid: false, error: 'Order signature not from session key' };
       }
