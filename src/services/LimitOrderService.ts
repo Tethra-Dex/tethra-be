@@ -1,6 +1,6 @@
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
-import LimitExecutorV2Artifact from '../../../tethra-sc/out/LimitExecutorV2.sol/LimitExecutorV2.json';
+import LimitExecutorV2Artifact from '../abis/LimitExecutorV2.json';
 
 export interface KeeperLimitOpenOrderRequest {
   trader: string;

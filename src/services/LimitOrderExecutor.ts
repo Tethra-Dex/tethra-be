@@ -10,7 +10,7 @@
 
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
-import LimitExecutorABI from '../../../tethra-sc/out/LimitExecutorV2.sol/LimitExecutorV2.json';
+import LimitExecutorABI from '../abis/LimitExecutorV2.json';
 import { GridTradingService } from './GridTradingService';
 import { GridCell, GridCellStatus } from '../types/gridTrading';
 

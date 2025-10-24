@@ -8,8 +8,8 @@
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
 import { TPSLConfig } from '../types';
-import PositionManagerABI from '../../../tethra-sc/out/PositionManager.sol/PositionManager.json';
-import MarketExecutorABI from '../../../tethra-sc/out/MarketExecutor.sol/MarketExecutor.json';
+import PositionManagerABI from '../abis/PositionManager.json';
+import MarketExecutorABI from '../abis/MarketExecutor.json';
 
 interface Position {
   id: bigint;
