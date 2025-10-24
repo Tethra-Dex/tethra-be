@@ -42,6 +42,17 @@ export interface PlaceOneTapBetRequest {
   userSignature: string;      // User's signature approving this bet
 }
 
+// For keeper-only execution (gasless, no nonce or signature needed)
+export interface PlaceOneTapBetKeeperRequest {
+  trader: string;
+  symbol: string;
+  betAmount: string;
+  targetPrice: string;
+  targetTime: number;
+  entryPrice: string;
+  entryTime: number;
+}
+
 export interface SettleOneTapBetRequest {
   betId: string;
   currentPrice: string;

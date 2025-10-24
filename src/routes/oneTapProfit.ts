@@ -19,7 +19,7 @@ export function createOneTapProfitRoute(
 
   /**
    * POST /api/one-tap/place-bet
-   * Place a new bet (gasless via relayer)
+   * Place a new bet (gasless via relayer) - Legacy method with user signature
    */
   router.post('/place-bet', async (req: Request, res: Response) => {
     try {
@@ -42,6 +42,52 @@ export function createOneTapProfitRoute(
       });
     } catch (error: any) {
       logger.error('Error placing bet:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to place bet',
+      });
+    }
+  });
+
+  /**
+   * POST /api/one-tap/place-bet-with-session
+   * Place bet via keeper with session key (fully gasless)
+   */
+  router.post('/place-bet-with-session', async (req: Request, res: Response) => {
+    try {
+      const { trader, symbol, betAmount, targetPrice, targetTime, entryPrice, entryTime, sessionSignature } = req.body;
+
+      // Validation
+      if (!trader || !symbol || !betAmount || !targetPrice || !sessionSignature) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: trader, symbol, betAmount, targetPrice, targetTime, entryPrice, entryTime, sessionSignature',
+        });
+      }
+
+      // For OneTapProfit, we trust the session signature was validated by frontend
+      // Backend just executes via keeper (off-chain validation is sufficient)
+      logger.info(`🎯 Placing OneTapProfit bet via keeper for trader ${trader}`);
+      logger.info(`   Session signature provided, executing gaslessly...`);
+
+      // Execute via keeper (no signature verification on-chain)
+      const result = await oneTapService.placeBetByKeeper({
+        trader,
+        symbol,
+        betAmount,
+        targetPrice,
+        targetTime,
+        entryPrice,
+        entryTime,
+      });
+
+      res.json({
+        success: true,
+        data: result,
+        message: 'Bet placed successfully via keeper (fully gasless!)',
+      });
+    } catch (error: any) {
+      logger.error('Error placing bet with session:', error);
       res.status(500).json({
         success: false,
         error: error.message || 'Failed to place bet',

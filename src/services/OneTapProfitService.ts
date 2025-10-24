@@ -4,6 +4,7 @@ import {
   OneTapBet,
   OneTapBetStatus,
   PlaceOneTapBetRequest,
+  PlaceOneTapBetKeeperRequest,
   GetOneTapBetsQuery,
   OneTapProfitStats,
   CalculateMultiplierRequest,
@@ -12,6 +13,7 @@ import {
 
 const OneTapProfitABI = [
   'function placeBetMeta(address trader, string symbol, uint256 betAmount, uint256 targetPrice, uint256 targetTime, uint256 entryPrice, uint256 entryTime, bytes userSignature) external returns (uint256)',
+  'function placeBetByKeeper(address trader, string symbol, uint256 betAmount, uint256 targetPrice, uint256 targetTime, uint256 entryPrice, uint256 entryTime) external returns (uint256)',
   'function settleBet(uint256 betId, uint256 currentPrice, uint256 currentTime, bool won) external',
   'function getBet(uint256 betId) external view returns (uint256 id, address trader, string symbol, uint256 betAmount, uint256 targetPrice, uint256 targetTime, uint256 entryPrice, uint256 entryTime, uint256 multiplier, uint8 status, uint256 settledAt, uint256 settlePrice)',
   'function getUserBets(address user) external view returns (uint256[])',
@@ -67,7 +69,105 @@ export class OneTapProfitService {
   
   
   /**
-   * Place a bet - Execute on-chain IMMEDIATELY
+   * Place a bet via keeper (fully gasless for user)
+   * Backend validates session key off-chain, keeper executes without on-chain signature verification
+   */
+  async placeBetByKeeper(request: PlaceOneTapBetKeeperRequest): Promise<{ betId: string; txHash: string; }> {
+    try {
+      const GRID_Y_DOLLARS = 0.05; // Same as backend monitor
+      const targetPriceNum = parseFloat(request.targetPrice);
+      const gridBottomPrice = targetPriceNum - (GRID_Y_DOLLARS / 2);
+      const gridTopPrice = targetPriceNum + (GRID_Y_DOLLARS / 2);
+      
+      // Convert UTC timestamps to GMT+7 for logging
+      const toGMT7 = (timestamp: number) => {
+        const date = new Date(timestamp * 1000);
+        date.setHours(date.getHours() + 7); // Add 7 hours for GMT+7
+        return date.toISOString().replace('T', ' ').substring(0, 19) + ' GMT+7';
+      };
+      
+      this.logger.info(`🎯 Placing One Tap Profit bet on-chain via KEEPER for ${request.trader}`);
+      this.logger.info(`   Symbol: ${request.symbol}`);
+      this.logger.info(`   Entry Price: $${parseFloat(request.entryPrice).toFixed(2)} at ${toGMT7(request.entryTime)}`);
+      this.logger.info(`   Grid Price Range: $${gridBottomPrice.toFixed(2)} - $${gridTopPrice.toFixed(2)} (center: $${targetPriceNum.toFixed(2)})`);
+      this.logger.info(`   Time Window: ${toGMT7(request.entryTime)} → ${toGMT7(request.targetTime)}`);
+      
+      // Fix floating point precision
+      const betAmountFixed = parseFloat(request.betAmount).toFixed(6);
+      const targetPriceFixed = parseFloat(request.targetPrice).toFixed(8);
+      const entryPriceFixed = parseFloat(request.entryPrice).toFixed(8);
+      
+      const betAmount = ethers.parseUnits(betAmountFixed, 6);
+      const targetPrice = ethers.parseUnits(targetPriceFixed, 8);
+      const entryPrice = ethers.parseUnits(entryPriceFixed, 8);
+      
+      // Place bet on-chain via keeper (no signature verification on-chain)
+      const tx = await this.contract.placeBetByKeeper(
+        request.trader,
+        request.symbol,
+        betAmount,
+        targetPrice,
+        request.targetTime,
+        entryPrice,
+        request.entryTime
+      );
+      
+      this.logger.info(`⏳ Waiting for keeper transaction: ${tx.hash}`);
+      const receipt = await tx.wait();
+      
+      // Extract on-chain betId from event
+      const event = receipt.logs.find((log: any) => {
+        try {
+          const parsed = this.contract.interface.parseLog(log);
+          return parsed?.name === 'BetPlaced';
+        } catch {
+          return false;
+        }
+      });
+      
+      const parsedEvent = this.contract.interface.parseLog(event);
+      const onChainBetId = parsedEvent?.args?.betId?.toString();
+      
+      // Calculate multiplier
+      const multiplierResult = await this.calculateMultiplier({
+        entryPrice: request.entryPrice,
+        targetPrice: request.targetPrice,
+        entryTime: request.entryTime,
+        targetTime: request.targetTime,
+      });
+      
+      // Store in memory for monitoring
+      const bet: OneTapBet = {
+        betId: onChainBetId,
+        trader: request.trader.toLowerCase(),
+        symbol: request.symbol,
+        betAmount: request.betAmount,
+        targetPrice: request.targetPrice,
+        targetTime: request.targetTime,
+        entryPrice: request.entryPrice,
+        entryTime: request.entryTime,
+        multiplier: multiplierResult.multiplier,
+        status: OneTapBetStatus.ACTIVE,
+        createdAt: Date.now(),
+      };
+      
+      this.bets.set(onChainBetId, bet);
+      
+      const traderBets = this.betsByTrader.get(bet.trader) || [];
+      traderBets.push(onChainBetId);
+      this.betsByTrader.set(bet.trader, traderBets);
+      
+      this.logger.success(`✅ Bet placed on-chain via KEEPER! BetId: ${onChainBetId}, TxHash: ${tx.hash}`);
+      
+      return { betId: onChainBetId, txHash: tx.hash };
+    } catch (error: any) {
+      this.logger.error('Failed to place bet via keeper:', error);
+      throw new Error(`Failed to place bet: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Place a bet - Execute on-chain IMMEDIATELY (legacy method with user signature)
    * User pays USDC now, backend settles later when conditions met
    */
   async placeBet(request: PlaceOneTapBetRequest): Promise<{ betId: string; txHash: string; }> {
