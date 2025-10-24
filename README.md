@@ -1,15 +1,39 @@
-# Tethra DEX Backend - Pyth Oracle Price Service
+# Tethra DEX - Backend API
 
-Backend service untuk Tethra DEX yang menyediakan real-time price feeds menggunakan **Pyth Network Oracle**.
+![Node.js](https://img.shields.io/badge/Node.js-18+-green)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)
+![Express](https://img.shields.io/badge/Express-4.x-lightgrey)
 
-## 🌟 Features
+Comprehensive backend service for Tethra DEX providing:
+- 📊 **Real-time Price Feeds** (Pyth Network Oracle)
+- ✍️ **Price Signing** for on-chain verification
+- 🚀 **Relay Service** for gasless transactions
+- 🤖 **Automated Order Execution** (Limit orders, Grid trading, TP/SL)
+- 📊 **Position Monitoring** with auto-liquidation
+- 🎲 **One Tap Profit** betting settlement
 
-- ✅ **Pyth Network Oracle Integration** - Price feeds yang terverifikasi on-chain
-- ✅ **Multi-Asset Support** - BTC, ETH, SOL, AVAX, NEAR, BNB, XRP, AAVE, ARB, DOGE, LINK, MATIC
-- ✅ **WebSocket Real-time Updates** - Broadcasting harga setiap 5 detik
-- ✅ **REST API** - Endpoint untuk get prices, health check
-- ✅ **Fallback Mechanism** - Binance API sebagai fallback jika Pyth gagal
-- ✅ **TypeScript** - Type-safe development
+## 🌟 Key Features
+
+### Price Oracle & Signing
+- ✅ **Pyth Network Integration** - Cryptographically verified price feeds
+- ✅ **Multi-Asset Support** - 12 assets (BTC, ETH, SOL, AVAX, NEAR, BNB, XRP, AAVE, ARB, DOGE, LINK, MATIC)
+- ✅ **Price Signing** - ECDSA signatures for on-chain verification
+- ✅ **WebSocket Broadcasting** - Real-time price updates every 5 seconds
+- ✅ **Binance Fallback** - Automatic fallback if Pyth unavailable
+
+### Trading Automation
+- ✅ **Limit Order Keeper** - Auto-executes limit orders when price triggers
+- ✅ **Grid Trading Bot** - Manages grid trading sessions
+- ✅ **TP/SL Monitor** - Auto-executes take-profit and stop-loss orders
+- ✅ **Tap-to-Trade Executor** - Fast backend-only order execution
+- ✅ **Position Monitor** - Auto-liquidates undercollateralized positions
+- ✅ **One Tap Profit Settlement** - Automatic bet settlement
+
+### Infrastructure
+- ✅ **Relay Service** - Gasless transactions with USDC gas payment
+- ✅ **RESTful API** - Comprehensive endpoints for all features
+- ✅ **WebSocket Server** - Real-time updates for prices and positions
+- ✅ **TypeScript** - Type-safe development with full type coverage
 
 ## 📋 Prerequisites
 
@@ -250,21 +274,257 @@ async function getPythPrices() {
 └────────────────────────────────────────┘
 ```
 
-## 🎯 Next Steps untuk Frontend Integration
+## 🖥️ Production Deployment (VPS)
 
-1. **Connect WebSocket di Frontend:**
-   - Connect ke `ws://localhost:3001/ws/price`
-   - Listen for `price_update` messages
+### Prerequisites
+- Ubuntu/Debian VPS (recommended: 2GB RAM minimum)
+- Node.js 18+ installed
+- Domain name (optional, for HTTPS)
+- Firewall configured
 
-2. **Display Oracle Price di Chart:**
-   - Ambil price dari Pyth Oracle (via WebSocket)
-   - Draw garis kuning horizontal di TradingView chart
-   - Update setiap ada price update baru
+### Step 1: Setup VPS
 
-3. **Show Price Comparison:**
-   - Binance price (existing) vs Pyth Oracle price
-   - Display confidence interval dari Pyth
-   - Show data source indicator
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Node.js 18+
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Install PM2 (process manager)
+sudo npm install -g pm2
+
+# Install Nginx (reverse proxy)
+sudo apt install -y nginx
+```
+
+### Step 2: Deploy Backend
+
+```bash
+# Clone repository
+cd /var/www
+sudo git clone <your-repo-url> tethra-dex
+cd tethra-dex/tethra-be
+
+# Install dependencies
+npm install
+
+# Build TypeScript
+npm run build
+
+# Setup environment variables
+sudo nano .env
+# Copy all values from .env.example and configure
+```
+
+### Step 3: Configure Environment
+
+Edit `.env` file with production values:
+
+```bash
+# Server
+PORT=3001
+NODE_ENV=production
+DEBUG=false
+
+# Smart Contracts (from deployment)
+CHAIN_ID=84532
+RPC_URL=https://sepolia.base.org
+MARKET_EXECUTOR_ADDRESS=0x...
+POSITION_MANAGER_ADDRESS=0x...
+TREASURY_MANAGER_ADDRESS=0x...
+# ... (copy all contract addresses)
+
+# Wallets (IMPORTANT: Keep private keys secure!)
+PRICE_SIGNER_PRIVATE_KEY=0x...
+RELAY_PRIVATE_KEY=0x...
+LIMIT_ORDER_KEEPER_PRIVATE_KEY=0x...
+```
+
+### Step 4: Run with PM2
+
+```bash
+# Start backend with PM2
+pm2 start npm --name "tethra-backend" -- start
+
+# Save PM2 config
+pm2 save
+
+# Enable PM2 startup on boot
+pm2 startup
+sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u $USER --hp $HOME
+
+# Check status
+pm2 status
+pm2 logs tethra-backend
+```
+
+### Step 5: Configure Nginx (Reverse Proxy)
+
+Create Nginx config:
+
+```bash
+sudo nano /etc/nginx/sites-available/tethra-backend
+```
+
+Add configuration:
+
+```nginx
+server {
+    listen 80;
+    server_name api.yourdomain.com; # or use IP address
+
+    location / {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # WebSocket support
+    location /ws {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+Enable site:
+
+```bash
+# Create symlink
+sudo ln -s /etc/nginx/sites-available/tethra-backend /etc/nginx/sites-enabled/
+
+# Test Nginx config
+sudo nginx -t
+
+# Restart Nginx
+sudo systemctl restart nginx
+```
+
+### Step 6: Setup SSL (HTTPS) - Optional but Recommended
+
+```bash
+# Install Certbot
+sudo apt install -y certbot python3-certbot-nginx
+
+# Get SSL certificate
+sudo certbot --nginx -d api.yourdomain.com
+
+# Auto-renewal is configured automatically
+sudo certbot renew --dry-run
+```
+
+### Step 7: Configure Firewall
+
+```bash
+# Allow SSH, HTTP, HTTPS
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+
+# Check status
+sudo ufw status
+```
+
+### Step 8: Monitor & Maintain
+
+```bash
+# View logs
+pm2 logs tethra-backend
+pm2 logs tethra-backend --lines 100
+
+# Restart service
+pm2 restart tethra-backend
+
+# Stop service
+pm2 stop tethra-backend
+
+# Monitor resources
+pm2 monit
+
+# Update code
+cd /var/www/tethra-dex/tethra-be
+sudo git pull
+npm install
+npm run build
+pm2 restart tethra-backend
+```
+
+### Important Production Notes
+
+⚠️ **Security Best Practices:**
+1. **Private Keys**: NEVER commit `.env` to Git. Store securely
+2. **Relay Wallet**: Fund with Base Sepolia ETH for gas fees
+3. **Firewall**: Only expose ports 22, 80, 443
+4. **SSL**: Always use HTTPS in production
+5. **Monitoring**: Setup uptime monitoring (UptimeRobot, etc.)
+
+💰 **Wallet Funding:**
+- Relay wallet needs Base Sepolia ETH (~0.1 ETH recommended)
+- Price signer wallet doesn't need ETH (signing only)
+- Keeper wallet needs Base Sepolia ETH for order execution
+
+🔄 **Auto-Restart on Crash:**
+PM2 automatically restarts the service if it crashes. Check logs:
+```bash
+pm2 logs tethra-backend --err
+```
+
+### Troubleshooting VPS Deployment
+
+**Issue: Port 3001 already in use**
+```bash
+sudo lsof -ti:3001 | xargs sudo kill -9
+pm2 restart tethra-backend
+```
+
+**Issue: Nginx 502 Bad Gateway**
+```bash
+# Check if backend is running
+pm2 status
+
+# Check backend logs
+pm2 logs tethra-backend
+
+# Restart Nginx
+sudo systemctl restart nginx
+```
+
+**Issue: Out of Memory**
+```bash
+# Increase Node.js memory limit
+pm2 start npm --name "tethra-backend" --max-memory-restart 500M -- start
+```
+
+**Issue: WebSocket connection fails**
+- Check firewall allows connections
+- Verify Nginx WebSocket config
+- Check frontend connects to correct wss:// URL (not ws://)
+
+## 🎯 Frontend Integration
+
+### Environment Variables for Frontend
+
+Update `Tethra-Front-End/.env`:
+
+```bash
+# Development
+NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
+NEXT_PUBLIC_WS_URL=ws://localhost:3001
+
+# Production
+NEXT_PUBLIC_BACKEND_URL=https://api.yourdomain.com
+NEXT_PUBLIC_WS_URL=wss://api.yourdomain.com
+```
 
 ## 📝 Notes
 
