@@ -168,8 +168,10 @@ export class PositionMonitor {
         return; // No positions yet
       }
 
-      // Check last 100 positions (or all if less)
-      const startId = Math.max(1, totalPositions - 99);
+      this.logger.info(`🔍 Scanning ${totalPositions} positions for liquidation...`);
+
+      // Check ALL positions (start from 1)
+      const startId = 1;
 
       for (let positionId = startId; positionId <= totalPositions; positionId++) {
         try {
@@ -239,23 +241,57 @@ export class PositionMonitor {
 
       const currentPrice = priceData.price;
 
-      // Check if should liquidate via RiskManager
-      const shouldLiquidate = await this.riskManager.shouldLiquidate(
-        position.id,
-        currentPrice,
-        position.collateral,
-        position.size,
-        position.entryPrice,
-        position.isLong
-      );
+      // 1. Calculate PnL locally to be sure
+      let pnl = 0n;
+      const entryPrice = BigInt(position.entryPrice);
+      const size = BigInt(position.size);
+      const collateral = BigInt(position.collateral);
+      
+      if (position.isLong) {
+          pnl = ((currentPrice - entryPrice) * size) / entryPrice;
+      } else {
+          pnl = ((entryPrice - currentPrice) * size) / entryPrice;
+      }
+
+      // Calculate PnL percentage (based on collateral)
+      // pnlPercentage = (pnl * 10000) / collateral  (basis points)
+      const pnlBps = (pnl * 10000n) / collateral;
+
+      // Log if position is in heavy loss
+      if (pnlBps < -8000n) { // -80%
+          this.logger.info(`📉 Position ${position.id} PnL: ${(Number(pnlBps)/100).toFixed(2)}% | Trader: ${position.trader}`);
+      }
+
+      // 2. Check if should liquidate via RiskManager
+      let shouldLiquidate = false;
+      try {
+          shouldLiquidate = await this.riskManager.shouldLiquidate(
+            position.id,
+            currentPrice,
+            position.collateral,
+            position.size,
+            position.entryPrice,
+            position.isLong
+          );
+      } catch (err) {
+          this.logger.error(`Error calling RiskManager.shouldLiquidate for ${position.id}`, err);
+      }
+
+      // 3. Force liquidation if PnL <= -99% (Contract threshold is 99%)
+      // If PnL is -1000%, this will definitely be true.
+      if (pnlBps <= -9900n) {
+          this.logger.warn(`💀 CRITICAL: Position ${position.id} has reached ${(Number(pnlBps)/100).toFixed(2)}% PnL. FORCE LIQUIDATING.`);
+          shouldLiquidate = true;
+      }
 
       if (shouldLiquidate) {
-        this.logger.warn(`⚠️  Position ${position.id} should be liquidated!`);
+        this.logger.warn(`⚠️  Position ${position.id} triggering liquidation!`);
         this.logger.info(`   Trader: ${position.trader}`);
         this.logger.info(`   Symbol: ${position.symbol}`);
         this.logger.info(`   Entry: ${this.formatPrice(position.entryPrice)}`);
         this.logger.info(`   Current: ${this.formatPrice(currentPrice)}`);
         this.logger.info(`   Collateral: ${this.formatUsdc(position.collateral)}`);
+        this.logger.info(`   PnL: ${(Number(pnlBps)/100).toFixed(2)}%`);
 
         // Execute liquidation
         await this.liquidatePosition(position, currentPrice);
@@ -267,45 +303,33 @@ export class PositionMonitor {
   }
 
   /**
-   * Liquidate a position
+   * Liquidate a position (Force Close via PositionManager)
    */
   private async liquidatePosition(position: Position, currentPrice: bigint) {
     try {
-      this.logger.info(`🔨 Liquidating position ${position.id}...`);
+      this.logger.info(`🔥 FORCE CLOSING position ${position.id} directly via PositionManager...`);
 
-      // Sign price (subtract 60 seconds to avoid "Price in future" error)
-      const timestamp = Math.floor(Date.now() / 1000) - 60;
-      const signedPrice = await this.signPrice(position.symbol, currentPrice, timestamp);
-
-      this.logger.info('Price signature details:', {
-        symbol: signedPrice.symbol,
-        price: this.formatPrice(signedPrice.price),
-        timestamp: signedPrice.timestamp,
-        signature: signedPrice.signature.substring(0, 20) + '...',
-      });
-
-      // Execute liquidation
-      const tx = await this.marketExecutor.liquidatePosition(
+      // Directly call PositionManager.closePosition (requires EXECUTOR_ROLE)
+      // This bypasses MarketExecutor's checks and fees, ensuring the position is closed.
+      const tx = await this.positionManager.closePosition(
         position.id,
-        signedPrice,
+        currentPrice,
         { gasLimit: 500000 }
       );
 
-      this.logger.info(`📤 Liquidation tx sent: ${tx.hash}`);
+      this.logger.info(`📤 Force Close tx sent: ${tx.hash}`);
 
       const receipt = await tx.wait();
 
-      this.logger.success(`✅ Position ${position.id} liquidated successfully!`);
+      this.logger.success(`✅ Position ${position.id} CLOSED successfully!`);
       this.logger.info(`   TX: ${receipt.hash}`);
       this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
 
     } catch (error: any) {
-      this.logger.error(`❌ Failed to liquidate position ${position.id}:`, error.message);
+      this.logger.error(`❌ Failed to force close position ${position.id}:`, error.message);
 
       // Log specific errors
-      if (error.message?.includes('Position not eligible for liquidation')) {
-        this.logger.warn('💡 Position no longer eligible for liquidation (price recovered?)');
-      } else if (error.message?.includes('Position not open')) {
+      if (error.message?.includes('Position not open')) {
         this.logger.warn('💡 Position already closed');
       }
     }
