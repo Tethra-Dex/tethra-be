@@ -1,6 +1,6 @@
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
-import LimitExecutorV2Artifact from '../abis/LimitExecutorV2.json';
+import LimitExecutorArtifact from '../abis/LimitExecutor.json';
 
 export interface KeeperLimitOpenOrderRequest {
   trader: string;
@@ -45,10 +45,7 @@ export class LimitOrderService {
 
     this.keeperWallet = new ethers.Wallet(keeperPrivateKey, this.provider);
 
-    this.limitExecutorAddress =
-      process.env.LIMIT_EXECUTOR_ADDRESS ||
-      process.env.LIMIT_EXECUTOR_V2_ADDRESS ||
-      '';
+    this.limitExecutorAddress = process.env.LIMIT_EXECUTOR_ADDRESS || '';
 
     if (!this.limitExecutorAddress) {
       throw new Error('LIMIT_EXECUTOR_ADDRESS not configured');
@@ -56,13 +53,13 @@ export class LimitOrderService {
 
     this.limitExecutor = new Contract(
       this.limitExecutorAddress,
-      (LimitExecutorV2Artifact as { abi: any }).abi,
+      (LimitExecutorArtifact as { abi: any }).abi,
       this.keeperWallet
     );
 
     this.logger.info('🔄 LimitOrderService initialized');
     this.logger.info(`   Keeper wallet: ${this.keeperWallet.address}`);
-    this.logger.info(`   LimitExecutorV2: ${this.limitExecutorAddress}`);
+    this.logger.info(`   LimitExecutor: ${this.limitExecutorAddress}`);
   }
 
   private normalizeBigNumberish(value: string, label: string): bigint {

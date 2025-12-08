@@ -12,7 +12,7 @@ import {
  * GridTradingService - In-Memory Storage for Grid Trading
  *
  * This service manages grid trading sessions and cells using in-memory storage.
- * Data will be lost on server restart, but orders remain on-chain in LimitExecutorV2.
+ * Data will be lost on server restart, but orders remain on-chain in LimitExecutor.
  *
  * For production, consider replacing with persistent storage (PostgreSQL, SQLite, etc.)
  */

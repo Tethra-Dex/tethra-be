@@ -8,6 +8,9 @@
 import { ethers, Contract } from 'ethers';
 import { Logger } from '../utils/Logger';
 import { NonceManager } from '../utils/NonceManager';
+import MarketExecutorABI from '../abis/MarketExecutor.json';
+import PositionManagerABI from '../abis/PositionManager.json';
+import StabilityFundABI from '../abis/StabilityFund.json';
 
 export class RelayService {
   private logger: Logger;
@@ -20,7 +23,6 @@ export class RelayService {
   private MARKET_EXECUTOR_ADDRESS: string;
   private LIMIT_EXECUTOR_ADDRESS: string;
   private POSITION_MANAGER_ADDRESS: string;
-  private TREASURY_MANAGER_ADDRESS: string;
   
   constructor() {
     this.logger = new Logger('RelayService');
@@ -41,9 +43,8 @@ export class RelayService {
     this.MARKET_EXECUTOR_ADDRESS = process.env.MARKET_EXECUTOR_ADDRESS || '';
     this.LIMIT_EXECUTOR_ADDRESS = process.env.LIMIT_EXECUTOR_ADDRESS || '';
     this.POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS || '';
-    this.TREASURY_MANAGER_ADDRESS = process.env.TREASURY_MANAGER_ADDRESS || '';
     
-    if (!this.PAYMASTER_ADDRESS || !this.MARKET_EXECUTOR_ADDRESS || !this.LIMIT_EXECUTOR_ADDRESS || !this.POSITION_MANAGER_ADDRESS || !this.TREASURY_MANAGER_ADDRESS) {
+    if (!this.PAYMASTER_ADDRESS || !this.MARKET_EXECUTOR_ADDRESS || !this.LIMIT_EXECUTOR_ADDRESS || !this.POSITION_MANAGER_ADDRESS) {
       throw new Error('Contract addresses not configured');
     }
     
@@ -243,10 +244,11 @@ export class RelayService {
   ): Promise<{ txHash: string }> {
     let attempt = 0;
     const MAX_RETRIES = 3;
+    const TRADING_FEE_BPS = 5n; // 0.05% (same as MarketExecutor default)
 
     while (attempt < MAX_RETRIES) {
       try {
-        this.logger.info(`🔥 GASLESS CLOSE (Attempt ${attempt + 1}): Position ${positionId} for ${userAddress}`);
+        this.logger.info(`GASLESS CLOSE (Attempt ${attempt + 1}): Position ${positionId} for ${userAddress}`);
         
         // Get price from local backend API
         const backendUrl = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -257,169 +259,81 @@ export class RelayService {
         const priceData: any = await priceResponse.json();
         const signedPrice = priceData.data;
         
-        this.logger.info(`   🔥 CALLING POSITIONMANAGER DIRECTLY (with fee split!)`);
-        
-        // First, get position details to calculate settlement
-        const positionIface = new ethers.Interface([
-          'function getPosition(uint256) view returns (tuple(uint256 id, address trader, string symbol, bool isLong, uint256 collateral, uint256 size, uint256 leverage, uint256 entryPrice, uint256 openTimestamp, uint8 status))',
-          'function calculatePnL(uint256, uint256) view returns (int256)'
-        ]);
-        
-        const positionContract = new Contract(
+        this.logger.info(`   Closing via PositionManager + StabilityFund (manual settlement)`);
+
+        // Contracts (relayer must have EXECUTOR_ROLE on PositionManager and SETTLER_ROLE on StabilityFund)
+        const positionManager = new Contract(
           this.POSITION_MANAGER_ADDRESS,
-          positionIface,
-          this.provider
+          PositionManagerABI.abi,
+          this.relayWallet
         );
-        
-        const positionData = await positionContract.getPosition(BigInt(positionId));
+        const stabilityFundAddress = process.env.STABILITY_FUND_ADDRESS || '';
+        if (!stabilityFundAddress) {
+          throw new Error('STABILITY_FUND_ADDRESS not configured');
+        }
+        const stabilityFund = new Contract(
+          stabilityFundAddress,
+          StabilityFundABI.abi,
+          this.relayWallet
+        );
+
+        // Fetch position + PnL
+        const [positionData, pnl] = await Promise.all([
+          positionManager.getPosition(BigInt(positionId)),
+          positionManager.calculatePnL(BigInt(positionId), BigInt(signedPrice.price))
+        ]);
+
         const position = {
-          id: positionData[0],
-          trader: positionData[1],
-          symbol: positionData[2],
-          isLong: positionData[3],
-          collateral: positionData[4],
-          size: positionData[5],
-          leverage: positionData[6],
-          entryPrice: positionData[7],
-          openTimestamp: positionData[8],
-          status: positionData[9]
+          id: positionData.id as bigint,
+          trader: positionData.trader as string,
+          symbol: positionData.symbol as string,
+          isLong: positionData.isLong as boolean,
+          collateral: positionData.collateral as bigint,
+          size: positionData.size as bigint,
+          leverage: positionData.leverage as bigint,
+          entryPrice: positionData.entryPrice as bigint,
+          status: Number(positionData.status)
         };
-        const pnl = await positionContract.calculatePnL(BigInt(positionId), BigInt(signedPrice.price));
-        
-        this.logger.info(`   📊 Position details:`);
-        this.logger.info(`   - Collateral: ${position.collateral.toString()}`);
-        this.logger.info(`   - Size: ${position.size.toString()}`);
-        this.logger.info(`   - Leverage: ${position.leverage.toString()}`);
-        this.logger.info(`   - PnL: ${pnl.toString()}`);
-        
-        // Prepare Close Position Transaction
-        const closeIface = new ethers.Interface([
-          'function closePosition(uint256 positionId, uint256 exitPrice)'
-        ]);
-        
-        const closeData = closeIface.encodeFunctionData('closePosition', [
+
+        const tradingFee = (position.size * TRADING_FEE_BPS) / 100000n; // size * 0.05%
+        const maxAllowedLoss = -1n * (position.collateral * 9900n) / 10000n; // cap loss at 99% collateral
+        const cappedPnl = pnl < maxAllowedLoss ? maxAllowedLoss : pnl;
+
+        this.logger.info(`   Collateral: ${position.collateral.toString()}`);
+        this.logger.info(`   Size: ${position.size.toString()}`);
+        this.logger.info(`   PnL raw: ${pnl.toString()} | capped: ${cappedPnl.toString()}`);
+        this.logger.info(`   Trading fee: ${tradingFee.toString()}`);
+
+        // 1) close position
+        const nonceClose = await NonceManager.getInstance().getNonce();
+        const closeTx = await positionManager.closePosition(
           BigInt(positionId),
-          BigInt(signedPrice.price)
-        ]);
+          BigInt(signedPrice.price),
+          { gasLimit: 500000n, nonce: nonceClose }
+        );
+        this.logger.info(`📤 Close tx sent: ${closeTx.hash}`);
+        await closeTx.wait();
 
-        // Calculate Fees and Refunds
-        // Fee is 0.05% of COLLATERAL (not size!)
-        const TRADING_FEE_BPS = 5n; // 0.05%
-        const tradingFee = (position.collateral * TRADING_FEE_BPS) / 10000n;
+        // 2) settle trade (refund/fee)
+        const nonceSettle = await NonceManager.getInstance().getNonce();
+        const settleTx = await stabilityFund.settleTrade(
+          position.trader,
+          position.collateral,
+          cappedPnl,
+          tradingFee,
+          this.relayWallet.address,
+          { gasLimit: 600000n, nonce: nonceSettle }
+        );
+        this.logger.info(`📤 Settle tx sent: ${settleTx.hash}`);
         
-        // Split fee: 20% to relayer (0.01% of collateral), 80% to treasury (0.04% of collateral)
-        const relayerFee = (tradingFee * 2000n) / 10000n; // 20% of total fee = 0.01% of collateral
-        const treasuryFee = tradingFee - relayerFee; // 80% of total fee = 0.04% of collateral
+        this.logger.success(`Close flow finished. Close TX: ${closeTx.hash}`);
         
-        this.logger.info(`💰 Fee breakdown (from collateral):`);
-        this.logger.info(`   Total fee: ${tradingFee.toString()}`);
-        this.logger.info(`   Relayer fee: ${relayerFee.toString()}`);
-        this.logger.info(`   Treasury fee: ${treasuryFee.toString()}`);
-        
-        // Calculate refund amount
-        let refundAmount: bigint;
-        
-        if (pnl >= 0) {
-          refundAmount = position.collateral + BigInt(pnl) - tradingFee;
-        } else {
-          const absLoss = BigInt(-pnl);
-          if (position.collateral > absLoss + tradingFee) {
-            refundAmount = position.collateral - absLoss - tradingFee;
-          } else {
-            refundAmount = 0n; // Total loss
-          }
-        }
-        
-        this.logger.info(`💰 Refund to trader: ${refundAmount.toString()}`);
-        
-        // Reserve Nonces: We need up to 4 nonces (Close + Treasury + Relayer + Refund)
-        // Count required transactions
-        let txCount = 1; // Close is always 1
-        if (treasuryFee > 0n) txCount++;
-        if (relayerFee > 0n) txCount++;
-        if (refundAmount > 0n) txCount++;
-        
-        const startNonce = await NonceManager.getInstance().getNonceBatch(txCount);
-        let currentNonce = startNonce;
-
-        // 1. Send Close Position TX
-        this.logger.info(`🚀 [1/${txCount}] Sending Close TX (Nonce: ${currentNonce})`);
-        const closeTx = await this.relayWallet.sendTransaction({
-          to: this.POSITION_MANAGER_ADDRESS,
-          data: closeData,
-          gasLimit: 500000n,
-          nonce: currentNonce++
-        });
-        
-        // Prepare interfaces for settlement
-        const treasuryIface = new ethers.Interface([
-          'function refundCollateral(address to, uint256 amount)',
-          'function collectFee(address from, uint256 amount)'
-        ]);
-
-        // 2. Send Treasury Fee TX
-        if (treasuryFee > 0n) {
-          const feeData = treasuryIface.encodeFunctionData('collectFee', [
-            position.trader,
-            treasuryFee
-          ]);
-          
-          this.logger.info(`🚀 [2/${txCount}] Sending Treasury Fee TX (Nonce: ${currentNonce})`);
-          this.relayWallet.sendTransaction({
-            to: this.TREASURY_MANAGER_ADDRESS,
-            data: feeData,
-            gasLimit: 200000n,
-            nonce: currentNonce++
-          }).then(tx => this.logger.info(`   -> Treasury Fee Hash: ${tx.hash}`))
-            .catch(e => this.logger.error('Treasury Fee Failed', e));
-        }
-        
-        // 3. Send Relayer Fee TX
-        if (relayerFee > 0n) {
-          // Relayer fee is taken from treasury (as collateral is there) via refundCollateral
-          // effectively "refunding" to the relayer wallet
-          const relayerFeeData = treasuryIface.encodeFunctionData('refundCollateral', [
-              this.relayWallet.address,
-              relayerFee
-          ]);
-
-          this.logger.info(`🚀 [3/${txCount}] Sending Relayer Fee TX (Nonce: ${currentNonce})`);
-          this.relayWallet.sendTransaction({
-            to: this.TREASURY_MANAGER_ADDRESS,
-            data: relayerFeeData,
-            gasLimit: 200000n,
-            nonce: currentNonce++
-          }).then(tx => this.logger.info(`   -> Relayer Fee Hash: ${tx.hash}`))
-            .catch(e => this.logger.error('Relayer Fee Failed', e));
-        }
-        
-        // 4. Send Refund TX
-        if (refundAmount > 0n) {
-          const refundData = treasuryIface.encodeFunctionData('refundCollateral', [
-            position.trader,
-            refundAmount
-          ]);
-          
-          this.logger.info(`🚀 [4/${txCount}] Sending Refund TX (Nonce: ${currentNonce})`);
-          this.relayWallet.sendTransaction({
-            to: this.TREASURY_MANAGER_ADDRESS,
-            data: refundData,
-            gasLimit: 200000n,
-            nonce: currentNonce++
-          }).then(tx => this.logger.info(`   -> Refund Hash: ${tx.hash}`))
-            .catch(e => this.logger.error('Refund Failed', e));
-        }
-        
-        this.logger.success(`✅ Sequence initiated! Close TX: ${closeTx.hash}`);
-        
-        return {
-          txHash: closeTx.hash
-        };
+        return { txHash: closeTx.hash };
         
       } catch (error: any) {
         if (this.isNonceError(error)) {
           attempt++;
-          this.logger.warn(`⚠️ Nonce error detected during closePositionGasless (Attempt ${attempt}/${MAX_RETRIES}). Resyncing...`);
+          this.logger.warn(`Nonce error detected during closePositionGasless (Attempt ${attempt}/${MAX_RETRIES}). Resyncing...`);
           await NonceManager.getInstance().resync();
           continue;
         }
@@ -430,8 +344,8 @@ export class RelayService {
     
     throw new Error(`Failed to close position after ${MAX_RETRIES} attempts`);
   }
-  
-  /**
+
+/**
    * GASLESS CANCEL ORDER - Keeper pays gas
    */
   async cancelOrderGasless(
@@ -511,3 +425,4 @@ export class RelayService {
     };
   }
 }
+

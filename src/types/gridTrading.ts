@@ -25,7 +25,7 @@ export interface GridCell {
   isLong: boolean; // true = buy/long, false = sell/short
   clickCount: number; // Number of orders in this cell
   ordersCreated: number; // How many orders have been created on-chain
-  orderIds: string[]; // On-chain order IDs from LimitExecutorV2
+  orderIds: string[]; // On-chain order IDs from LimitExecutor
   collateralPerOrder: string; // USDC per order (6 decimals)
   status: GridCellStatus;
   createdAt: number;

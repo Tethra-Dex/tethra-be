@@ -10,6 +10,7 @@ import { Logger } from '../utils/Logger';
 import { TPSLConfig } from '../types';
 import PositionManagerABI from '../abis/PositionManager.json';
 import MarketExecutorABI from '../abis/MarketExecutor.json';
+import StabilityFundABI from '../abis/StabilityFund.json';
 
 interface Position {
   id: bigint;
@@ -288,128 +289,52 @@ export class TPSLMonitor {
       this.logger.info(`   - Leverage: ${position.leverage.toString()}`);
       this.logger.info(`   - PnL: ${pnl.toString()}`);
 
-      // Close position via PositionManager directly
-      const tx = await this.positionManager.closePosition(
+      // Close via PositionManager (manual settlement)
+      const closeTx = await this.positionManager.closePosition(
         position.id,
         currentPrice,
         { gasLimit: 500000 }
       );
 
-      this.logger.info(`📤 Close tx sent: ${tx.hash}`);
-      const receipt = await tx.wait();
+      this.logger.info(`Close tx sent: ${closeTx.hash}`);
+      const receipt = await closeTx.wait();
 
-      this.logger.success(`✅ Position ${position.id} closed successfully! (${reason})`);
+      // Manual settlement (match MarketExecutor) via StabilityFund
+      const TRADING_FEE_BPS = 5n; // 0.05%
+      const tradingFee = (position.size * TRADING_FEE_BPS) / 100000n;
+      const maxAllowedLoss = -1n * (position.collateral * 9900n) / 10000n;
+      const cappedPnl = pnl < maxAllowedLoss ? maxAllowedLoss : pnl;
+
+      const stabilityFundAddress = process.env.STABILITY_FUND_ADDRESS || '';
+      if (!stabilityFundAddress) {
+        throw new Error('STABILITY_FUND_ADDRESS not configured');
+      }
+      const stabilityFund = new ethers.Contract(
+        stabilityFundAddress,
+        StabilityFundABI.abi,
+        this.keeperWallet
+      );
+
+      const settleTx = await stabilityFund.settleTrade(
+        position.trader,
+        position.collateral,
+        cappedPnl,
+        tradingFee,
+        this.keeperWallet.address,
+        { gasLimit: 600000 }
+      );
+
+      this.logger.success(`Position ${position.id} closed successfully! (${reason})`);
       this.logger.info(`   TX: ${receipt.hash}`);
+      this.logger.info(`   Settle TX: ${settleTx.hash}`);
       this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
 
-      // Wait for nonce to update
-      this.logger.info('⏳ Waiting for nonce to update...');
-      await this.sleep(2000);
-
-      // Calculate settlement with fee split
-      // Fee is 0.05% of COLLATERAL (not size!)
-      const TRADING_FEE_BPS = 5n; // 0.05%
-      const tradingFee = (position.collateral * TRADING_FEE_BPS) / 10000n;
-      
-      // Split fee: 20% to keeper (0.01% of collateral), 80% to treasury (0.04% of collateral)
-      const keeperFee = (tradingFee * 2000n) / 10000n; // 20% of total fee
-      const treasuryFee = tradingFee - keeperFee; // 80% of total fee
-      
-      this.logger.info(`💰 Fee breakdown (from collateral):`);
-      this.logger.info(`   Collateral: ${(Number(position.collateral) / 1e6).toFixed(6)} USDC`);
-      this.logger.info(`   Total fee: ${(Number(tradingFee) / 1e6).toFixed(6)} USDC (0.05% of collateral)`);
-      this.logger.info(`   Keeper fee: ${(Number(keeperFee) / 1e6).toFixed(6)} USDC (0.01% of collateral)`);
-      this.logger.info(`   Treasury fee: ${(Number(treasuryFee) / 1e6).toFixed(6)} USDC (0.04% of collateral)`);
-      
-      // Calculate refund amount
-      let refundAmount: bigint;
-      
-      if (pnl >= 0) {
-        // Profit: collateral + PnL - total fee
-        refundAmount = position.collateral + BigInt(pnl) - tradingFee;
-      } else {
-        // Loss: collateral - abs(PnL) - total fee
-        const absLoss = BigInt(-pnl);
-        if (position.collateral > absLoss + tradingFee) {
-          refundAmount = position.collateral - absLoss - tradingFee;
-        } else {
-          refundAmount = 0n; // Total loss
-        }
-      }
-      
-      this.logger.info(`💰 Settlement:`);
-      this.logger.info(`   Refund to trader: ${refundAmount.toString()}`);
-
-      // Execute settlement transactions
-      const treasuryManagerAddress = process.env.TREASURY_MANAGER_ADDRESS;
-      if (!treasuryManagerAddress) {
-        throw new Error('TREASURY_MANAGER_ADDRESS not configured');
-      }
-
-      const treasuryIface = new ethers.Interface([
-        'function refundCollateral(address to, uint256 amount)',
-        'function collectFee(address from, uint256 amount)'
-      ]);
-      
-      const nonce = await this.provider.getTransactionCount(this.keeperWallet.address, 'pending');
-      
-      // 1. Collect treasury fee
-      if (treasuryFee > 0n) {
-        const feeData = treasuryIface.encodeFunctionData('collectFee', [
-          position.trader,
-          treasuryFee
-        ]);
-        
-        const feeTx = await this.keeperWallet.sendTransaction({
-          to: treasuryManagerAddress,
-          data: feeData,
-          gasLimit: 200000n,
-          nonce: nonce
-        });
-        
-        this.logger.info(`📤 Treasury fee TX: ${feeTx.hash}`);
-        await feeTx.wait();
-        this.logger.success(`✅ Treasury fee collected: ${treasuryFee.toString()}`);
-      }
-      
-      // 2. Transfer keeper fee to keeper wallet
-      if (keeperFee > 0n) {
-        const keeperFeeTx = await this.keeperWallet.sendTransaction({
-          to: treasuryManagerAddress,
-          data: treasuryIface.encodeFunctionData('refundCollateral', [
-            this.keeperWallet.address,
-            keeperFee
-          ]),
-          gasLimit: 200000n,
-          nonce: nonce + 1
-        });
-        
-        this.logger.info(`📤 Keeper fee TX: ${keeperFeeTx.hash}`);
-        await keeperFeeTx.wait();
-        this.logger.success(`✅ Keeper fee paid: ${keeperFee.toString()}`);
-      }
-      
-      // 3. Refund to trader
-      if (refundAmount > 0n) {
-        const refundData = treasuryIface.encodeFunctionData('refundCollateral', [
-          position.trader,
-          refundAmount
-        ]);
-        
-        const refundTx = await this.keeperWallet.sendTransaction({
-          to: treasuryManagerAddress,
-          data: refundData,
-          gasLimit: 200000n,
-          nonce: nonce + 2
-        });
-        
-        this.logger.info(`📤 Refund TX: ${refundTx.hash}`);
-        await refundTx.wait();
-        this.logger.success(`✅ Refunded ${refundAmount.toString()} to trader!`);
-      }
+      // Settlement handled via StabilityFund
+      this.logger.info('   Settlement handled via StabilityFund.settleTrade');
 
       // Remove TP/SL config
       this.tpslConfigs.delete(Number(position.id));
+
 
     } catch (error: any) {
       this.logger.error(`❌ Failed to close position ${position.id}:`, error.message);
