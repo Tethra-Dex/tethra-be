@@ -14,7 +14,9 @@ export class StabilityFundStreamer {
   private readonly provider: ethers.JsonRpcProvider;
   private readonly relayer: ethers.Wallet;
   private readonly stabilityFund: ethers.Contract;
+  private readonly stabilityFundAddress: string;
   private readonly intervalMs: number;
+  private usdcToken?: ethers.Contract;
   private intervalId?: NodeJS.Timeout;
   private isRunning = false;
   private isStreaming = false;
@@ -33,6 +35,7 @@ export class StabilityFundStreamer {
     if (!stabilityFundAddress) {
       throw new Error('STABILITY_FUND_ADDRESS not configured');
     }
+    this.stabilityFundAddress = stabilityFundAddress;
 
     this.stabilityFund = new ethers.Contract(
       stabilityFundAddress,
@@ -94,7 +97,7 @@ export class StabilityFundStreamer {
       isRunning: this.isRunning,
       intervalMs: this.intervalMs,
       relayer: this.relayer.address,
-      contract: this.stabilityFund.target?.toString?.() || this.stabilityFund.address,
+      contract: this.stabilityFund.target?.toString?.() || this.stabilityFundAddress,
       streaming: this.isStreaming
     };
   }
@@ -133,6 +136,15 @@ export class StabilityFundStreamer {
         }
       } catch (error) {
         this.logger.warn('Could not read stream interval, proceeding anyway', error);
+      }
+
+      const balance = await this.getStabilityFundBalance();
+      if (balance !== null && balance === 0n) {
+        this.logger.info('Skipping streamToVault, StabilityFund USDC balance is zero', {
+          trigger,
+          balance: balance.toString()
+        });
+        return;
       }
 
       const nonce = await this.tryGetNonce();
@@ -178,6 +190,26 @@ export class StabilityFundStreamer {
       await NonceManager.getInstance().resync();
     } catch {
       this.logger.warn('Failed to resync nonce after error');
+    }
+  }
+
+  private async getStabilityFundBalance(): Promise<bigint | null> {
+    try {
+      if (!this.usdcToken) {
+        const usdcAddress: string = await this.stabilityFund.usdc();
+        this.usdcToken = new ethers.Contract(
+          usdcAddress,
+          ['function balanceOf(address) view returns (uint256)'],
+          this.provider
+        );
+      }
+
+      const fundAddress = this.stabilityFund.target?.toString?.() || this.stabilityFundAddress;
+      const balance: bigint = await this.usdcToken.balanceOf(fundAddress);
+      return balance;
+    } catch (error) {
+      this.logger.warn('Could not read StabilityFund USDC balance', error);
+      return null;
     }
   }
 
