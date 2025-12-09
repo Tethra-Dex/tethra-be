@@ -77,6 +77,11 @@ npm run build
 npm start
 ```
 
+## Stability Fund Streaming
+
+- Backend cron calls `streamToVault()` on `STABILITY_FUND_ADDRESS` every 6 hours using the relayer/keeper wallet (`RELAY_PRIVATE_KEY` and `KEEPER_ADDRESS`).
+- Interval can be adjusted with `VAULT_STREAM_INTERVAL_MINUTES` (default 360 minutes = 6 hours).
+
 ## 📡 API Endpoints
 
 ### REST API

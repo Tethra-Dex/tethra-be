@@ -15,6 +15,7 @@ import { TapToTradeService } from './services/TapToTradeService';
 import { TapToTradeExecutor } from './services/TapToTradeExecutor';
 import { OneTapProfitService } from './services/OneTapProfitService';
 import { OneTapProfitMonitor } from './services/OneTapProfitMonitor';
+import { StabilityFundStreamer } from './services/StabilityFundStreamer';
 import { createPriceRoute } from './routes/price';
 import { createRelayRoute } from './routes/relay';
 import { createLimitOrderRoute } from './routes/limitOrders';
@@ -100,6 +101,13 @@ async function main() {
     positionMonitor.start();
     positionMonitorRef = positionMonitor; // Store reference for graceful shutdown
     logger.success('✅ Position Monitor started! Monitoring for liquidations...');
+    
+    // Initialize Stability Fund streamer (periodic streamToVault)
+    logger.info('dYZ_ Initializing Stability Fund streamer...');
+    const stabilityFundStreamer = new StabilityFundStreamer();
+    stabilityFundStreamer.start();
+    stabilityFundStreamerRef = stabilityFundStreamer;
+    logger.success('✅ Stability Fund streamer scheduled (streamToVault cron running)');
     
     // Check Price Signer status
     if (signerService.isInitialized()) {
@@ -270,6 +278,7 @@ let positionMonitorRef: any = null;
 let tpslMonitorRef: any = null;
 let tapToTradeExecutorRef: any = null;
 let oneTapProfitMonitorRef: any = null;
+let stabilityFundStreamerRef: StabilityFundStreamer | null = null;
 
 process.on('SIGINT', () => {
   logger.info('Received SIGINT, shutting down gracefully...');
@@ -287,6 +296,9 @@ process.on('SIGINT', () => {
   }
   if (oneTapProfitMonitorRef) {
     oneTapProfitMonitorRef.stop();
+  }
+  if (stabilityFundStreamerRef) {
+    stabilityFundStreamerRef.stop();
   }
   process.exit(0);
 });
@@ -307,6 +319,9 @@ process.on('SIGTERM', () => {
   }
   if (oneTapProfitMonitorRef) {
     oneTapProfitMonitorRef.stop();
+  }
+  if (stabilityFundStreamerRef) {
+    stabilityFundStreamerRef.stop();
   }
   process.exit(0);
 });
