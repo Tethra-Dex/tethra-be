@@ -1,9 +1,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
 import { Server as WebSocketServer } from 'ws';
 import http from 'http';
 import { PythPriceService } from './services/PythPriceService';
+import { ChainlinkPriceService } from './services/ChainlinkPriceService';
+import { IPriceService } from './services/IPriceService';
 import { PriceSignerService } from './services/PriceSignerService';
 import { RelayService } from './services/RelayService';
 import { LimitOrderService } from './services/LimitOrderService';
@@ -26,7 +29,13 @@ import { createOneTapProfitRoute } from './routes/oneTapProfit';
 import { createFaucetRoute } from './routes/faucet';
 import { Logger } from './utils/Logger';
 
-dotenv.config();
+// Load env from project root (works even if process is started from a different CWD)
+const envPath = path.resolve(__dirname, '../.env');
+const envResult = dotenv.config({ path: envPath });
+if (envResult.error) {
+  // Fallback: try default dotenv behavior (uses process.cwd())
+  dotenv.config();
+}
 
 const logger = new Logger('Main');
 const app = express();
@@ -51,7 +60,14 @@ async function main() {
     logger.info('🚀 Starting Tethra DEX Backend (Pyth Oracle Integration)...');
     
     // Initialize services
-    const priceService = new PythPriceService();
+    const oracleProvider = (process.env.ORACLE_PROVIDER || 'chainlink').toLowerCase();
+    logger.info(`dY"S Oracle provider: ${oracleProvider}`);
+    if (oracleProvider === 'chainlink') {
+      logger.info(`dY"н Chainlink RPC: ${process.env.CHAINLINK_RPC_URL || process.env.RPC_URL || '(not set)'}`);
+      logger.info(`dY"н Chainlink feed BTC: ${process.env.CHAINLINK_FEED_BTC || '(not set)'}`);
+    }
+    const priceService: IPriceService =
+      oracleProvider === 'pyth' ? new PythPriceService() : new ChainlinkPriceService();
     const signerService = new PriceSignerService(); // Auto-initializes in constructor
     const relayService = new RelayService(); // Initialize relay service for gasless transactions
     const limitOrderService = new LimitOrderService(); // Keeper interactions for limit orders
@@ -59,7 +75,7 @@ async function main() {
     const tapToTradeService = new TapToTradeService(); // Tap-to-trade backend-only orders
     const oneTapProfitService = new OneTapProfitService(); // One Tap Profit betting system
 
-    // Wait for Pyth price service to initialize
+    // Wait for price service to initialize
     await priceService.initialize();
 
     // Initialize TP/SL Monitor first (needed by LimitOrderExecutor)
@@ -172,7 +188,7 @@ async function main() {
     app.get('/', (req: Request, res: Response) => {
       res.json({
         success: true,
-        message: 'Tethra DEX Backend - Pyth Oracle Price Service',
+        message: `Tethra DEX Backend - Oracle Price Service (${oracleProvider})`,
         version: '1.0.0',
         endpoints: {
           websocket: '/ws/price',

@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { Logger } from '../utils/Logger';
-import { PythPriceService } from './PythPriceService';
+import { IPriceService } from './IPriceService';
 import { OneTapProfitService } from './OneTapProfitService';
 import { OneTapBetStatus } from '../types/oneTapProfit';
 
@@ -17,7 +17,7 @@ const OneTapProfitABI = [
  */
 export class OneTapProfitMonitor {
   private readonly logger = new Logger('OneTapProfitMonitor');
-  private priceService: PythPriceService;
+  private priceService: IPriceService;
   private oneTapService: OneTapProfitService;
   private contract: ethers.Contract;
   private relayer: ethers.Wallet;
@@ -35,7 +35,7 @@ export class OneTapProfitMonitor {
   private settlementQueue: Array<{ betId: string; currentPrice: string; currentTime: number; won: boolean }> = [];
   private queuedBets: Set<string> = new Set(); // Track bets already in queue to prevent spam
   
-  constructor(priceService: PythPriceService, oneTapService: OneTapProfitService) {
+  constructor(priceService: IPriceService, oneTapService: OneTapProfitService) {
     this.priceService = priceService;
     this.oneTapService = oneTapService;
     

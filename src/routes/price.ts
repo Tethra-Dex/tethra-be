@@ -1,12 +1,25 @@
 import { Router, Request, Response } from 'express';
-import { PythPriceService } from '../services/PythPriceService';
+import { IPriceService } from '../services/IPriceService';
 import { PriceSignerService } from '../services/PriceSignerService';
 
 export function createPriceRoute(
-  priceService: PythPriceService,
+  priceService: IPriceService,
   signerService: PriceSignerService
 ): Router {
   const router = Router();
+
+  const toPrice8Decimals = (priceData: any): bigint => {
+    if (priceData?.rawPrice && typeof priceData.decimals === 'number') {
+      const raw = BigInt(priceData.rawPrice);
+      const feedDecimals = BigInt(priceData.decimals);
+      if (feedDecimals === 8n) return raw;
+      if (feedDecimals > 8n) return raw / 10n ** (feedDecimals - 8n);
+      return raw * 10n ** (8n - feedDecimals);
+    }
+
+    // Fallback (less precise): derive from JS number
+    return BigInt(Math.floor(Number(priceData.price) * 1e8));
+  };
 
   // Get all current prices
   router.get('/all', (req: Request, res: Response) => {
@@ -125,8 +138,8 @@ export function createPriceRoute(
         });
       }
 
-      // Get price in 8 decimals (Pyth uses 8 decimals)
-      const priceInDecimals = BigInt(Math.floor(currentPrice.price * 1e8));
+      // Price signed on-chain uses 8 decimals (see contracts' PRICE_DECIMALS)
+      const priceInDecimals = toPrice8Decimals(currentPrice);
       
       // CRITICAL: Use current Unix timestamp in SECONDS (not milliseconds!)
       // Subtract 2 seconds to account for network delay and ensure timestamp is in past
