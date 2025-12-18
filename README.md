@@ -59,6 +59,20 @@ NODE_ENV=development
 DEBUG=true
 ```
 
+### Configure Pyth Feeds (Add/Override Pairs)
+Default feeds are defined in code, but you can add/override feeds via env:
+
+```env
+# Option A: Individual env vars (read all keys that start with PYTH_FEED_)
+PYTH_FEED_BTC=0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43
+PYTH_FEED_EURUSD=0xa995d00bb36a63cef7fd2c287dc105fc8f3d93779f062f09551b0af3e81ec30b
+
+# Option B: Provide all feeds as a JSON object (SYMBOL -> priceId)
+# PYTH_FEEDS={\"BTC\":\"0x...\",\"ETH\":\"0x...\",\"XAUUSD\":\"0x...\"}
+```
+
+Precedence: `PYTH_FEED_*` overrides `PYTH_FEEDS`, both override defaults. Set an empty value (e.g. `PYTH_FEED_SOL=`) to disable a default feed.
+
 ## 💻 Development
 
 ```bash

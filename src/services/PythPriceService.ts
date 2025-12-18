@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { Logger } from '../utils/Logger';
 import { PriceData, MultiAssetPriceData, SUPPORTED_ASSETS, AssetConfig } from '../types';
+import { normalizePythPriceId, resolvePythAssetsFromEnv } from '../config/pythFeeds';
 
 export class PythPriceService {
   private logger: Logger;
@@ -10,6 +11,8 @@ export class PythPriceService {
   private readonly PYTH_HERMES_WS = 'wss://hermes.pyth.network/ws';
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private assets: AssetConfig[] = [];
+  private assetByFeedId: Map<string, AssetConfig> = new Map();
 
   constructor() {
     this.logger = new Logger('PythPriceService');
@@ -17,7 +20,32 @@ export class PythPriceService {
 
   async initialize(): Promise<void> {
     this.logger.info('🚀 Initializing Pyth Price Service...');
-    this.logger.info(`📊 Monitoring ${SUPPORTED_ASSETS.length} assets via Pyth Network`);
+
+    const resolved = resolvePythAssetsFromEnv(SUPPORTED_ASSETS, process.env);
+
+    for (const warning of resolved.warnings) {
+      this.logger.warn(warning);
+    }
+
+    this.assetByFeedId = new Map();
+    for (const asset of resolved.assets) {
+      const normalized = normalizePythPriceId(asset.pythPriceId);
+      if (!normalized) {
+        this.logger.warn(
+          `Skipping asset ${asset.symbol}: invalid pythPriceId "${asset.pythPriceId}"`
+        );
+        continue;
+      }
+
+      const normalizedAsset = { ...asset, pythPriceId: normalized };
+      this.assetByFeedId.set(normalized, normalizedAsset);
+    }
+
+    this.assets = Array.from(this.assetByFeedId.values());
+
+    this.logger.info(
+      `📊 Monitoring ${this.assets.length} assets via Pyth Network${resolved.usedCustomFeeds ? ' (custom feeds from env)' : ''}`
+    );
     this.logger.info(`📡 Connecting to: ${this.PYTH_HERMES_WS}`);
     
     // Connect to Pyth WebSocket
@@ -37,14 +65,14 @@ export class PythPriceService {
         this.reconnectAttempts = 0;
         
         // Subscribe to all price feeds
-        const priceIds = SUPPORTED_ASSETS.map(asset => asset.pythPriceId);
+        const priceIds = this.assets.map(asset => asset.pythPriceId);
         const subscribeMessage = {
           type: 'subscribe',
           ids: priceIds
         };
         
         this.pythWs!.send(JSON.stringify(subscribeMessage));
-        this.logger.info(`📡 Subscribed to ${SUPPORTED_ASSETS.length} price feeds`);
+        this.logger.info(`📡 Subscribed to ${this.assets.length} price feeds`);
       });
       
       this.pythWs.on('message', (data: WebSocket.Data) => {
@@ -92,9 +120,8 @@ export class PythPriceService {
       // Find the asset by price feed ID
       // Pyth sends ID without 0x prefix, so normalize both for comparison
       const feedIdWithPrefix = priceFeed.id.startsWith('0x') ? priceFeed.id : `0x${priceFeed.id}`;
-      const asset = SUPPORTED_ASSETS.find(a => 
-        a.pythPriceId.toLowerCase() === feedIdWithPrefix.toLowerCase()
-      );
+      const normalizedFeedId = normalizePythPriceId(feedIdWithPrefix);
+      const asset = normalizedFeedId ? this.assetByFeedId.get(normalizedFeedId) : undefined;
       
       if (!asset) {
         return;

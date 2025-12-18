@@ -31,11 +31,11 @@ export interface PythPriceFeed {
 export interface AssetConfig {
   symbol: string;
   pythPriceId: string;
-  binanceSymbol: string;
-  tradingViewSymbol: string;
+  binanceSymbol?: string;
+  tradingViewSymbol?: string;
 }
 
-export const SUPPORTED_ASSETS: AssetConfig[] = [
+export const DEFAULT_ASSETS: AssetConfig[] = [
   {
     symbol: 'BTC',
     pythPriceId: '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
@@ -85,6 +85,9 @@ export const SUPPORTED_ASSETS: AssetConfig[] = [
     tradingViewSymbol: 'BINANCE:LINKUSDT'
   }
 ];
+
+// Backward compatible alias (older services import this symbol).
+export const SUPPORTED_ASSETS: AssetConfig[] = DEFAULT_ASSETS;
 
 // TP/SL Types
 export interface TPSLConfig {
