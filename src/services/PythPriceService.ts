@@ -138,16 +138,22 @@ export class PythPriceService {
       // Convert price with exponential
       const price = priceRaw * Math.pow(10, expo);
       const confidence = confidenceRaw * Math.pow(10, expo);
-      
-      // Data validation - reject stale data (older than 60 seconds)
+
       const now = Date.now();
       const age = now - publishTime;
-      if (age > 60000) {
-        this.logger.debug(`⚠️ Stale data for ${asset.symbol} (${age}ms old), skipping...`);
+      const currentPrice = this.currentPrices[asset.symbol];
+
+      // If data is older than 60s and we already have a price, keep the last known value
+      if (age > 60000 && currentPrice) {
         return;
       }
-      
-      // Update price cache
+
+      // Ignore out-of-order updates that are not newer than what we already have
+      if (currentPrice && currentPrice.publishTime !== undefined && publishTime <= currentPrice.publishTime) {
+        return;
+      }
+
+      // Update price cache (may use stale data only when we have nothing yet)
       this.currentPrices[asset.symbol] = {
         symbol: asset.symbol,
         price: price,
