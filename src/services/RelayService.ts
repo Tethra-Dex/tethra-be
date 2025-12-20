@@ -10,6 +10,7 @@ import { Logger } from '../utils/Logger';
 import { NonceManager } from '../utils/NonceManager';
 import MarketExecutorABI from '../abis/MarketExecutor.json';
 import PositionManagerABI from '../abis/PositionManager.json';
+import VaultPoolABI from '../abis/VaultPool.json';
 import StabilityFundABI from '../abis/StabilityFund.json';
 
 export class RelayService {
@@ -259,17 +260,21 @@ export class RelayService {
         const priceData: any = await priceResponse.json();
         const signedPrice = priceData.data;
         
-        this.logger.info(`   Closing via PositionManager + StabilityFund (manual settlement)`);
+        this.logger.info('   Closing via PositionManager + StabilityFund/VaultPool (manual settlement)');
 
-        // Contracts (relayer must have EXECUTOR_ROLE on PositionManager and SETTLER_ROLE on StabilityFund)
+        // Contracts (relayer must have EXECUTOR_ROLE on PositionManager and SETTLER_ROLE on StabilityFund/VaultPool)
         const positionManager = new Contract(
           this.POSITION_MANAGER_ADDRESS,
           PositionManagerABI.abi,
           this.relayWallet
         );
         const stabilityFundAddress = process.env.STABILITY_FUND_ADDRESS || '';
+        const vaultPoolAddress = process.env.VAULT_POOL_ADDRESS || '';
         if (!stabilityFundAddress) {
           throw new Error('STABILITY_FUND_ADDRESS not configured');
+        }
+        if (!vaultPoolAddress) {
+          throw new Error('VAULT_POOL_ADDRESS not configured');
         }
         const stabilityFund = new Contract(
           stabilityFundAddress,
@@ -298,11 +303,16 @@ export class RelayService {
         const tradingFee = (position.size * TRADING_FEE_BPS) / 100000n; // size * 0.05%
         const maxAllowedLoss = -1n * (position.collateral * 9900n) / 10000n; // cap loss at 99% collateral
         const cappedPnl = pnl < maxAllowedLoss ? maxAllowedLoss : pnl;
+        const payout = (() => {
+          const raw = position.collateral + cappedPnl - tradingFee;
+          return raw > 0n ? raw : 0n;
+        })();
 
         this.logger.info(`   Collateral: ${position.collateral.toString()}`);
         this.logger.info(`   Size: ${position.size.toString()}`);
         this.logger.info(`   PnL raw: ${pnl.toString()} | capped: ${cappedPnl.toString()}`);
         this.logger.info(`   Trading fee: ${tradingFee.toString()}`);
+        this.logger.info(`   Payout (net to trader): ${payout.toString()}`);
 
         // 1) close position
         const nonceClose = await NonceManager.getInstance().getNonce();
@@ -311,20 +321,39 @@ export class RelayService {
           BigInt(signedPrice.price),
           { gasLimit: 500000n, nonce: nonceClose }
         );
-        this.logger.info(`📤 Close tx sent: ${closeTx.hash}`);
+        this.logger.info(`Close tx sent: ${closeTx.hash}`);
         await closeTx.wait();
 
-        // 2) settle trade (refund/fee)
-        const nonceSettle = await NonceManager.getInstance().getNonce();
-        const settleTx = await stabilityFund.settleTrade(
-          position.trader,
-          position.collateral,
-          cappedPnl,
-          tradingFee,
-          this.relayWallet.address,
-          { gasLimit: 600000n, nonce: nonceSettle }
+        // 2) settle trade (refund/fee) - fallback ke VaultPool kalau buffer kurang
+        const usdc = new Contract(
+          await stabilityFund.usdc(),
+          ['function balanceOf(address) view returns (uint256)'],
+          this.relayWallet
         );
-        this.logger.info(`📤 Settle tx sent: ${settleTx.hash}`);
+        const bufferBalance: bigint = await usdc.balanceOf(stabilityFundAddress);
+        this.logger.info(`   Buffer balance: ${bufferBalance.toString()}`);
+
+        if (payout > bufferBalance) {
+          const vaultPool = new Contract(vaultPoolAddress, VaultPoolABI.abi, this.relayWallet);
+          const nonceCover = await NonceManager.getInstance().getNonce();
+          const coverTx = await vaultPool.coverPayout(position.trader, payout, {
+            gasLimit: 600000n,
+            nonce: nonceCover
+          });
+          this.logger.info(`coverPayout via VaultPool sent: ${coverTx.hash}`);
+          this.logger.warn('Buffer insufficient; paid trader directly from VaultPool. Fees not split via StabilityFund.');
+        } else {
+          const nonceSettle = await NonceManager.getInstance().getNonce();
+          const settleTx = await stabilityFund.settleTrade(
+            position.trader,
+            position.collateral,
+            cappedPnl,
+            tradingFee,
+            this.relayWallet.address,
+            { gasLimit: 600000n, nonce: nonceSettle }
+          );
+          this.logger.info(`Settle tx sent: ${settleTx.hash}`);
+        }
         
         this.logger.success(`Close flow finished. Close TX: ${closeTx.hash}`);
         
@@ -344,7 +373,6 @@ export class RelayService {
     
     throw new Error(`Failed to close position after ${MAX_RETRIES} attempts`);
   }
-
 /**
    * GASLESS CANCEL ORDER - Keeper pays gas
    */

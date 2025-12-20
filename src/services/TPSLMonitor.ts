@@ -278,12 +278,12 @@ export class TPSLMonitor {
    */
   private async closePosition(position: Position, currentPrice: bigint, reason: string) {
     try {
-      this.logger.info(`📤 Closing position ${position.id} (${reason})...`);
+      this.logger.info(`Closing position ${position.id} (${reason})...`);
 
       // Calculate PnL before closing
       const pnl = await this.positionManager.calculatePnL(position.id, currentPrice);
       
-      this.logger.info(`   📊 Position details:`);
+      this.logger.info('   Position details:');
       this.logger.info(`   - Collateral: ${position.collateral.toString()}`);
       this.logger.info(`   - Size: ${position.size.toString()}`);
       this.logger.info(`   - Leverage: ${position.leverage.toString()}`);
@@ -299,49 +299,70 @@ export class TPSLMonitor {
       this.logger.info(`Close tx sent: ${closeTx.hash}`);
       const receipt = await closeTx.wait();
 
-      // Manual settlement (match MarketExecutor) via StabilityFund
+      // Manual settlement (match MarketExecutor) via StabilityFund / VaultPool fallback
       const TRADING_FEE_BPS = 5n; // 0.05%
       const tradingFee = (position.size * TRADING_FEE_BPS) / 100000n;
       const maxAllowedLoss = -1n * (position.collateral * 9900n) / 10000n;
       const cappedPnl = pnl < maxAllowedLoss ? maxAllowedLoss : pnl;
+      const payout = (() => {
+        const raw = position.collateral + cappedPnl - tradingFee;
+        return raw > 0n ? raw : 0n;
+      })();
 
       const stabilityFundAddress = process.env.STABILITY_FUND_ADDRESS || '';
+      const vaultPoolAddress = process.env.VAULT_POOL_ADDRESS || '';
       if (!stabilityFundAddress) {
         throw new Error('STABILITY_FUND_ADDRESS not configured');
       }
+      if (!vaultPoolAddress) {
+        throw new Error('VAULT_POOL_ADDRESS not configured');
+      }
+
       const stabilityFund = new ethers.Contract(
         stabilityFundAddress,
         StabilityFundABI.abi,
         this.keeperWallet
       );
-
-      const settleTx = await stabilityFund.settleTrade(
-        position.trader,
-        position.collateral,
-        cappedPnl,
-        tradingFee,
-        this.keeperWallet.address,
-        { gasLimit: 600000 }
+      const usdc = new ethers.Contract(
+        await stabilityFund.usdc(),
+        ['function balanceOf(address) view returns (uint256)'],
+        this.keeperWallet
       );
+      const bufferBalance: bigint = await usdc.balanceOf(stabilityFundAddress);
+
+      if (payout > bufferBalance) {
+        const vaultPool = new ethers.Contract(
+          vaultPoolAddress,
+          ['function coverPayout(address to, uint256 amount)'],
+          this.keeperWallet
+        );
+        const coverTx = await vaultPool.coverPayout(position.trader, payout, { gasLimit: 600000 });
+        this.logger.info(`coverPayout via VaultPool sent: ${coverTx.hash}`);
+        this.logger.warn('Buffer insufficient; paid trader directly from VaultPool. Fees not split via StabilityFund.');
+      } else {
+        const settleTx = await stabilityFund.settleTrade(
+          position.trader,
+          position.collateral,
+          cappedPnl,
+          tradingFee,
+          this.keeperWallet.address,
+          { gasLimit: 600000 }
+        );
+        this.logger.info(`Settle tx sent: ${settleTx.hash}`);
+      }
 
       this.logger.success(`Position ${position.id} closed successfully! (${reason})`);
       this.logger.info(`   TX: ${receipt.hash}`);
-      this.logger.info(`   Settle TX: ${settleTx.hash}`);
       this.logger.info(`   Gas used: ${receipt.gasUsed.toString()}`);
-
-      // Settlement handled via StabilityFund
-      this.logger.info('   Settlement handled via StabilityFund.settleTrade');
 
       // Remove TP/SL config
       this.tpslConfigs.delete(Number(position.id));
 
-
     } catch (error: any) {
-      this.logger.error(`❌ Failed to close position ${position.id}:`, error.message);
-      this.logger.error(`   Full error:`, error);
+      this.logger.error(`??O Failed to close position ${position.id}:`, error.message);
+      this.logger.error('   Full error:', error);
     }
   }
-
   /**
    * Sign price data
    */
